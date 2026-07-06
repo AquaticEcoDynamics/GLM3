@@ -1540,7 +1540,18 @@ void recalc_surface_salt()
 static AED_REAL psi_m(AED_REAL zL);
 static AED_REAL psi_hw(AED_REAL zL);
 
-/******************************************************************************/
+/******************************************************************************
+ * Iterative Monin-Obukhov correction of the bulk transfer coefficients for
+ * non-neutral atmospheric stability, per Appendix B of Hipsey et al. (2019,
+ * GMD 12, 473) [Eqs B1-B10].  Control flow hardened following the ELCOM
+ * implementation (cwr_utils thermodynamics_utilities.f90): z/L is clamped
+ * inside the iteration, convergence is tested on L (relative), and every
+ * failure path falls back to the neutral-atmosphere values.
+ *
+ * Fluxes are returned with GLM's sign convention: positive INTO the water.
+ * The free-convection ("still air", TVA 1972 s5.31) fluxes act as a magnitude
+ * floor carrying the sign of the forced-convection flux.
+ ******************************************************************************/
 int atmos_stability(      AED_REAL *Q_latentheat,
                           AED_REAL *Q_sensible,
                           AED_REAL  wind_speed,
@@ -1556,33 +1567,34 @@ int atmos_stability(      AED_REAL *Q_latentheat,
                           AED_REAL *coef_wind_chwn,
                           AED_REAL *zonL                )
 {
+    const int      ITER_MAX = 100;     // iteration cap (typically converges in < 20)
+    const AED_REAL CONV_TOL = 1.0e-3;  // relative convergence tolerance on L
+    const AED_REAL RELAX    = 0.5;     // under-relaxation of L updates (damps the
+                                       // 2-cycling of the plain fixed-point map)
+    const AED_REAL ZL_MAX   = 15.0;    // validity bound on |z/L| (I&P 1990, p329)
+    const AED_REAL vonK     = 0.4100;  // von Karman's constant
+    const AED_REAL charnock = 0.012;   // Charnock constant [Eq B2]
+    const AED_REAL c_z0     = 0.0001;  // roughness guess for wind height scaling
 
     AED_REAL U10, U_sensM, U_sensH, Ux;
-    AED_REAL zL, L, zL0, z0, zS, G1, G2, G3, G5, G6, Ldenom;
+    AED_REAL zL, zL_h, zL_prev, L, L_prev, z0, zS, G1, G2, G3, G5, G6, Ldenom;
     AED_REAL CDN10, CHWN10, CDN4, CDN3, CHWN, rCDN, CD4, CHW;
     AED_REAL P1, P2, P4;
-    AED_REAL T_virt, dT, dq;
-    AED_REAL SH, LH, momn_flux;
+    AED_REAL T_virt, dT, dq, dTv;
+    AED_REAL SH, LH;
     AED_REAL alpha_e, alpha_h, visc_k_air;
     AED_REAL Q_latentheat_still, Q_sensible_still;
 
-    int atmos_count, atmos_status;
-
-    AED_REAL vonK = 0.4100;    // von Karman's constant
-    AED_REAL c_z0 = 0.0001;    // Default surafce roughness
-    AED_REAL zL_MAX = -15.0;   // Bound the iteration (eg. 15 for 10m, 3 for 2m)
+    int iter, atmos_status;
 
 /*----------------------------------------------------------------------------*/
-    atmos_status = 0;
+    atmos_status = 1;
 
-    //# Some initial windspeed checks
     U_sensM = wind_speed;
     if (fabs(WIND_HEIGHT-10.0) > 0.5)
         U10 = wind_speed * (log(10.0/c_z0)/log(WIND_HEIGHT/c_z0));
     else
         U10 = wind_speed;
-
-    CHWN10 = CH;
 
     //# Surface temperature and humidity gradients
     dT = temp_water - temp_air;
@@ -1590,89 +1602,71 @@ int atmos_stability(      AED_REAL *Q_latentheat,
 
     visc_k_air = (1./rho_air)*(4.94e-8*temp_air + 1.7184e-5); //>m2/s
 
-    //# First calculate still air approximations (free convenction) and use
-    //  this as a minimum limit to compare with forced convection value
-    //  For the fluxes to still air, see TVA Section 5.311 and 5.314
-
-    //# Still air flux computation
+    //# Still air (free convection) fluxes; TVA Sections 5.311 and 5.314.
+    //  Active only when the near-surface air column is unstable (surface air
+    //  lighter than ambient).  These provide a magnitude floor for light winds.
     if (rho_air - rho_o > zero) {
         alpha_h = 0.137*0.5*K_air * pow( (g* fabs(rho_air-rho_o)/(rho_air*visc_k_air*D_air)), (1/3.0));
         alpha_e = alpha_h/cp_air;
         Q_sensible_still = -alpha_h * dT;
-        Q_latentheat_still = -alpha_e * latent_heat_vap * dq ;
-        // printf(">alpha_e = %10.5f\n",alpha_e);
+        Q_latentheat_still = -alpha_e * latent_heat_vap * dq;
     } else {
         Q_sensible_still = zero;
         Q_latentheat_still = zero;
     }
 
     if ( atm_stab == 2 ) {
-      // Assign free vs forced
-      if (Q_sensible_still < *Q_sensible)
-         *Q_sensible = Q_sensible_still;
-      if (Q_latentheat_still < *Q_latentheat)
-         *Q_latentheat = Q_latentheat_still;
-      *zonL = zero;
-      atmos_status = -2;
-
-      return atmos_status;
+        //# Free vs forced convection only (no stability iteration): keep the
+        //  caller's bulk fluxes, floored by the free-convection magnitude
+        //  (the floor carries the sign of the forced flux)
+        if (fabs(Q_sensible_still) > fabs(*Q_sensible))
+            *Q_sensible = SIGN(Q_sensible_still, *Q_sensible);
+        if (fabs(Q_latentheat_still) > fabs(*Q_latentheat))
+            *Q_latentheat = SIGN(Q_latentheat_still, *Q_latentheat);
+        if (*Q_latentheat > zero) *Q_latentheat = zero;   // no condensation
+        *zonL = zero;
+        return -2;
     }
 
-    /////////////
-
-    printf("top = %10.5f\n",0.137*0.5*K_air);
-    printf("bit = %10.5f\n",pow( (g* fabs(rho_air-rho_o)/(rho_air*visc_k_air*D_air)), (1/3.0)));
-    printf("visc_k_air = %10.5f\n",visc_k_air);
-    printf("D_air = %10.5f\n",D_air);
-    printf("K_air = %10.5f\n",K_air);
-    printf("dq = %10.5f\n",dq);
-    printf("*Q_sensible_still = %10.5f\n",Q_sensible_still);
-    printf("*Q_latentheat_still = %10.5f\n",Q_latentheat_still);
-
-    /////////////
-
-
-
-    //# Now check windspeed
-    CDN10 = 0.001;
-    if (U_sensM<0.01) {
+    //# Calm conditions: u* -> 0 so L is undefined; no iteration possible
+    if (U_sensM < 0.01) {
         *Q_sensible = Q_sensible_still;
         *Q_latentheat = Q_latentheat_still;
-    } else {
-        // Neutral Drag Coefficient is a function of windspeed @ 10m
-        //Option1
-          //  if (U10 > 5.0)
-          //      CDN10 = (1.0 + 0.07*(U10-5.0))/1000.0;
-        //Option2
-        CDN10 = 1.92E-7 * U10*U10*U10 + 0.00096;
-
-        //Check
-        if (CDN10>0.0025) CDN10 = 0.0025;
+        if (*Q_latentheat > zero) *Q_latentheat = zero;   // no condensation
+        *zonL = zero;
+        return 0;
     }
 
+    /**************************************************************************
+     * Neutral transfer coefficients [Eqs B1-B3]                              *
+     **************************************************************************/
+    //# Neutral drag as a function of 10 m windspeed; Babanin & Makin (2008)
+    CDN10 = 1.92E-7 * U10*U10*U10 + 0.00096;
+    if (CDN10 > 0.0025) CDN10 = 0.0025;
 
-    //# Charnock computation of roughness, from Ux estimate.
-    //  0.00001568 is kinematic viscosity ?
-    //  0.012 is Charnock constant (alpha)
-    Ux = sqrt(CDN10  * U_sensM * U_sensM);
-    z0 = (0.012*Ux*Ux/g) + 0.11*visc_k_air/Ux;
-    CDN10 = pow(vonK/log(10./z0),2.0);
+    //# Charnock roughness with smooth-flow transition [Eq B2], seeded with the
+    //  first-guess friction velocity, then recompute the neutral drag [Eq B3]
+    Ux = sqrt(CDN10) * U10;
+    z0 = (charnock*Ux*Ux/g) + 0.11*visc_k_air/Ux;
+    CDN10 = pow(vonK/log(10./z0), 2.0);
 
-    //# Estimate surface roughness lengths
+    //# Neutral heat/moisture coefficient is the user value, wind-independent
+    CHWN10 = CH;
+
+    //# Roughness length scales and height correction factors (Rayner 1980)
     z0 = 10.0/(exp(vonK/sqrt(CDN10)));
     zS = 10.0/(exp(vonK*vonK/(CHWN10*log(10.0/z0))));
 
-    //# Height correction factors
     G1 = log(10.0/z0);
     G2 = log(10.0/zS);
     G3 = log(HUMIDITY_HEIGHT/zS);
     G5 = log(HUMIDITY_HEIGHT/z0);
     G6 = log(WIND_HEIGHT/z0);
 
-    CDN4 = CDN10*(G1*G1)/(G6*G6);    // Scale down to sensor heights
+    CDN4 = CDN10*(G1*G1)/(G6*G6);    // scale down to sensor heights
     CDN3 = CDN10*(G1*G1)/(G5*G5);
     CHWN = CHWN10*(G1*G2)/(G5*G3);
-    CD4  = CDN4;                     // Initialize
+    CD4  = CDN4;
     CHW  = CHWN;
 
     //# Windspeed at the humidity sensor height
@@ -1681,120 +1675,130 @@ int atmos_stability(      AED_REAL *Q_latentheat,
     //# Virtual air temperature
     T_virt = (temp_air+Kelvin) * (1.0 + 0.61*humidity_altitude);
 
-    //# Heat fluxes based on bulk transfer (forced convection)
-    SH = CHW * rho_air * cp_air * U_sensH  * dT;  //> W/m2
-    LH = CHW * rho_air * U_sensH * dq;            //>
+    //# Neutral flux first estimates.  SH is the sensible heat flux [W/m2] and
+    //  LH the evaporative MASS flux [kg/m2/s], both positive upward, so the
+    //  0.61*T*LH buoyancy term in L needs no division by latent heat [Eq B4]
+    SH = CHW * rho_air * cp_air * U_sensH * dT;
+    LH = CHW * rho_air * U_sensH * dq;
 
-    //# Friction velocity
-    momn_flux = CD4 * rho_air * U_sensM*U_sensM;
-    Ux = sqrt(momn_flux/rho_air);
+    Ux = sqrt(CD4) * U_sensM;
 
-    //# Monin-Obukhov Length
-    Ldenom = (vonK * g * ((SH/cp_air) + 0.61*(temp_air+Kelvin)*LH));
-    if (fabs(Ldenom) < 1e-5) {
-        zL = SIGN(zL_MAX,dT);
-        L = HUMIDITY_HEIGHT/zL;
-    } else {
+    //# Initial Monin-Obukhov length [Eq B4]
+    Ldenom = vonK * g * ((SH/cp_air) + 0.61*(temp_air+Kelvin)*LH);
+    if (fabs(Ldenom) < 1.0e-7) {
+        //# Vanishing buoyancy flux = near-neutral (|L| large); the sign of the
+        //  virtual temperature difference selects the branch (water buoyant
+        //  relative to air => unstable => L < 0)
+        dTv = dT + 0.61*(temp_air+Kelvin)*dq;
+        L = SIGN(1.0e6, -dTv);
+    } else
         L = -(rho_air*Ux*Ux*Ux*T_virt) / Ldenom;
-        zL = HUMIDITY_HEIGHT/L;
-    }
 
-    printf("U_sensM = %10.5f\n",U_sensM);
-    printf("L = %10.5f\n",L);
-    printf("zL = %10.5f\n",zL);
+    /**************************************************************************
+     * Iterate coefficients <-> fluxes <-> L to convergence [Eq B10].         *
+     * Convergence is tested on the CLAMPED z/L - the quantity that actually  *
+     * sets the coefficients - so states pegged at the +/-15 validity bound   *
+     * (light wind and/or strong stratification) converge to the clamped      *
+     * coefficients instead of spuriously falling back to neutral.            *
+     **************************************************************************/
+    zL = WIND_HEIGHT/L;
+    if (fabs(zL) > ZL_MAX) zL = SIGN(ZL_MAX, zL);
 
-    //# Start iterative sequence for heat flux calculations
-    atmos_count = 1;
-    atmos_status = 1;
-    zL0 = zero;
-    while ((fabs(zL - zL0) >= 0.0001) ){ // && (fabs(zL) <= fabs(zL_MAX)+1)) {
-        zL0 = zL;
-        zL = WIND_HEIGHT/L;
+    for (iter = 0; iter < ITER_MAX; iter++) {
+        //# Evaluate psi at both sensor heights from the same (clamped) L
+        L = WIND_HEIGHT/zL;
+        zL_h = HUMIDITY_HEIGHT/L;
 
-        if (++atmos_count>=100){
-            atmos_status = -1;
-            break;
-        }
-
-        // Calculate drag coefficient, CD
+        //# Drag coefficient [Eq B10, X = D]
         P4 = psi_m(zL);
         rCDN = sqrt(CDN4);
         CD4 = CDN4/(1.0+CDN4*(P4*P4 - 2.0*vonK*P4/rCDN)/(vonK*vonK));
 
-        // Calculate Humdity/Temp coefficient, CHW
-        zL = HUMIDITY_HEIGHT/L;
-
-        P1 = psi_m(zL);
-        P2 = psi_hw(zL);
+        //# Humidity/temperature coefficient [Eq B10, X = H,E]
+        P1 = psi_m(zL_h);
+        P2 = psi_hw(zL_h);
         rCDN = sqrt(CDN3);
         CHW = CHWN/(1.0 + CHWN*(P1*P2 - (vonK*P2/rCDN)
                             - vonK*P1*rCDN/CHWN)/(vonK*vonK));
 
-        // Recalculate heat and momn fluxes
+        //# Within |z/L| <= 15 these denominators cannot cross zero, but guard
+        //  against any numerical surprise with the neutral fallback
+        if (CD4 <= zero || CHW <= zero) { atmos_status = -1; break; }
+
+        //# Recalculate fluxes and friction velocity
         SH = CHW * rho_air * cp_air * U_sensH * dT;
-        LH = CHW * rho_air * U_sensH  * dq;
-        momn_flux = CD4 * rho_air * U_sensM*U_sensM;
+        LH = CHW * rho_air * U_sensH * dq;
+        Ux = sqrt(CD4) * U_sensM;
 
-        // Recalculate friction velocity
-        Ux = sqrt(momn_flux/rho_air);
+        //# Recalculate Monin-Obukhov length [Eq B4]
+        Ldenom = vonK * g * ((SH/cp_air) + 0.61*(temp_air+Kelvin)*LH);
+        if (fabs(Ldenom) < 1.0e-7) {
+            zL = zero;                      // converged to neutral
+            break;
+        }
 
-        // Recalculate Monin - Obukhov length
-        L = -rho_air *Ux*Ux*Ux * T_virt / (vonK * g
-                                * ((SH/cp_air) + 0.61*(temp_air+Kelvin)*LH));
+        L_prev = L;
+        L = -(rho_air*Ux*Ux*Ux*T_virt) / Ldenom;
+        //# damp the update to suppress 2-cycling of the plain fixed-point map
+        L = L_prev + RELAX*(L - L_prev);
 
-        //printf("L = %10.5f\n",L);
-        //printf("CHW = %10.5f\n",CHW);
-        //printf("CD4 = %10.5f\n",CD4);
-
-      //  if (fabs(L) < 0.5)
-      //      L = SIGN(1.0e-20,dT);
-        zL = HUMIDITY_HEIGHT/L;
-    } // enddo
-
-    if (atmos_status==-1)
-       return atmos_status;
-
-
-    //# Last calculation ... but 1st, check for high values
-    if (fabs(zL)>fabs(zL_MAX))
-        zL = SIGN(fabs(zL_MAX),zL);
-    else
+        zL_prev = zL;
         zL = WIND_HEIGHT/L;
+        if (fabs(zL) > ZL_MAX) zL = SIGN(ZL_MAX, zL);
 
-    P4 = psi_m(zL);
-    rCDN = sqrt(CDN4);
-    CD4 = CDN4/(1.0+CDN4*(P4*P4 - 2.0*vonK*P4/rCDN)/(vonK*vonK));
-    zL = zL*HUMIDITY_HEIGHT/WIND_HEIGHT;
-    P1 = psi_m(zL);
-    P2 = psi_hw(zL);
-    rCDN = sqrt(CDN3);
-    CHW = CHWN/(1.0 + CHWN*(P1*P2 - (vonK*P2/rCDN)
-            - vonK*P1*rCDN/CHWN)/(vonK*vonK));
+        if (fabs(zL - zL_prev) <= CONV_TOL * fabs(zL) + 1.0e-4)
+            break;                          // converged (incl. pegged at the bound)
+    }
+    if (iter >= ITER_MAX) atmos_status = -1;
+
+    if (atmos_status == -1) {
+        //# Not converged: fall back to the neutral-atmosphere values
+        CD4 = CDN4;
+        CHW = CHWN;
+        SH  = CHWN * rho_air * cp_air * U_sensH * dT;
+        LH  = CHWN * rho_air * U_sensH * dq;
+        zL_h = zero;
+    } else {
+        //# Final coefficients and fluxes at the converged (clamped) z/L.
+        //  psi only needs z/L, so the neutral case (zL = 0) needs no special
+        //  handling (psi(0) = 0 recovers the neutral coefficients).
+        zL_h = zL * HUMIDITY_HEIGHT/WIND_HEIGHT;
+
+        P4 = psi_m(zL);
+        rCDN = sqrt(CDN4);
+        CD4 = CDN4/(1.0+CDN4*(P4*P4 - 2.0*vonK*P4/rCDN)/(vonK*vonK));
+
+        P1 = psi_m(zL_h);
+        P2 = psi_hw(zL_h);
+        rCDN = sqrt(CDN3);
+        CHW = CHWN/(1.0 + CHWN*(P1*P2 - (vonK*P2/rCDN)
+                            - vonK*P1*rCDN/CHWN)/(vonK*vonK));
+
+        SH = CHW * rho_air * cp_air * U_sensH * dT;
+        LH = CHW * rho_air * U_sensH * dq;
+    }
 
     *coef_wind_drag = CD4;
     *coef_wind_chwn = CHW;
+    *zonL = zL_h;
 
-    *Q_sensible = -CHW * rho_air * cp_air * U_sensH * dT;
-    *Q_latentheat = -CHW * rho_air * U_sensH * dq * latent_heat_vap;
+    //# Return fluxes as positive INTO the water
+    *Q_sensible   = -SH;
+    *Q_latentheat = -LH * latent_heat_vap;
 
-    printf("*atmos_count = %10d\n",atmos_count);
-    printf("*CHW = %10.6f\n",CHW);
-    printf("*CD4 = %10.6f\n",CD4);
-    printf("zL = %10.5f\n",zL);
-    printf("dT = %10.5f\n",dT);
-    printf("dq = %10.5f\n",dq);
-    printf("*Q_sensible = %10.5f\n",*Q_sensible);
-    printf("*Q_latentheat = %10.5f\n",*Q_latentheat);
+    //# No condensation: evaporative flux may not heat the lake (consistent
+    //  with the neutral bulk flux policy at the call site)
+    if (*Q_latentheat > zero) *Q_latentheat = zero;
 
-    *zonL = zL;
     if ( atm_stab == 3 )
-       return atmos_status;
+        return atmos_status;
 
-    //# Limit minimum to still air value
-    if (Q_sensible_still < *Q_sensible)
-        *Q_sensible = Q_sensible_still;
-    if (Q_latentheat_still < *Q_latentheat)
-        *Q_latentheat = Q_latentheat_still;
+    //# Free-convection magnitude floor (sign follows the forced flux)
+    if (fabs(Q_sensible_still) > fabs(*Q_sensible))
+        *Q_sensible = SIGN(Q_sensible_still, *Q_sensible);
+    if (fabs(Q_latentheat_still) > fabs(*Q_latentheat))
+        *Q_latentheat = SIGN(Q_latentheat_still, *Q_latentheat);
+    if (*Q_latentheat > zero) *Q_latentheat = zero;
 
     return atmos_status;
 }
