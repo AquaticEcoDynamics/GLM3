@@ -198,6 +198,8 @@ SUBROUTINE api_copy_to_zone(aedZones, n_zones, wheights, x_cc, x_cc_hz, x_diag, 
    AED_REAL :: surf
    INTEGER  :: zcount(n_zones)
    LOGICAL  :: w_zones
+   INTEGER  :: i, sd
+   TYPE(aed_variable_t),POINTER :: tv
 !
 !-------------------------------------------------------------------------------
 !BEGIN
@@ -208,7 +210,19 @@ SUBROUTINE api_copy_to_zone(aedZones, n_zones, wheights, x_cc, x_cc_hz, x_diag, 
    DO zon=1,n_zones
       z_cc(1:nvars,:,zon) = 0.
       z_diag(:,:,zon) = 0.
-      z_diag_hz(:,zon) = 0.
+      !# z_diag_hz is the HOME of the per-zone benthic diagnostics (bound to
+      !# aedZones(zon)%z_cc_diag_hz), so clear it PER-VARIABLE: diagnostics
+      !# flagged rezero=.FALSE. (e.g. the CGM running averages cgm_tavg/lavg/savg
+      !# and slough counters) must persist across timesteps; the rest are cleared.
+      sd = 0
+      DO i=1,n_aed_vars
+         IF ( aed_get_var(i, tv) ) THEN
+            IF ( tv%var_type == V_DIAGNOSTIC .AND. tv%sheet ) THEN
+               sd = sd + 1
+               IF ( tv%rezero ) z_diag_hz(sd,zon) = 0.
+            ENDIF
+         ENDIF
+      ENDDO
 
       aedZones(zon)%z_env%z_temp = 0.
       aedZones(zon)%z_env%z_salt = 0.

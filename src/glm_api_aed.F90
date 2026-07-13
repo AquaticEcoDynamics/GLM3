@@ -590,6 +590,7 @@ SUBROUTINE api_do_glm(wlev)                             BIND(C, name=_WQ_DO_GLM)
 !LOCALS
    LOGICAL :: doSurface
    INTEGER :: lev, zon, j, k, j_d
+   INTEGER :: i, d_rz, sd_rz     ! rezero counters (independent of j_d)
    INTEGER, SAVE :: wlev_prev = 0
    AED_REAL :: surf, pa, ratio
    AED_REAL :: I_old, I_new
@@ -630,8 +631,24 @@ SUBROUTINE api_do_glm(wlev)                             BIND(C, name=_WQ_DO_GLM)
       ENDDO
    ENDIF
 
-   !# Reset benthic sheet diagnostics each timestep — api_copy_from_zone accumulates into cc_diag_hz
-   cc_diag_hz = 0.
+   !# Per-variable rezero of the benthic sheet diagnostics (matches the single-column
+   !# path, aed_api.F90 aed_run_model). Diagnostics registered rezero=.FALSE. (e.g. the
+   !# CGM running averages cgm_tavg/lavg and slough counters) must persist across
+   !# timesteps; all others are cleared here before api_copy_from_zone re-populates them.
+   d_rz = 0; sd_rz = 0
+   DO i = 1, n_aed_vars
+      IF ( aed_get_var(i, tv) ) THEN
+         IF ( tv%var_type == V_DIAGNOSTIC ) THEN
+            IF ( tv%sheet ) THEN
+               sd_rz = sd_rz + 1
+               IF ( tv%rezero ) cc_diag_hz(sd_rz) = zero_
+            ELSE
+               d_rz = d_rz + 1
+               IF ( tv%rezero ) cc_diag(d_rz, :) = zero_
+            ENDIF
+         ENDIF
+      ENDIF
+   ENDDO
 
    !# Remap the PERSISTED (rezero=.FALSE.) zavg diagnostics onto the current
    !# layer grid. The host zeroes the layer-indexed cc_diag during between-step
