@@ -160,9 +160,9 @@ if [ "$OSTYPE" = "FreeBSD" ] ; then
   # ./fetch.sh
   # ${MAKE} || exit 1
 elif [ "$OSTYPE" = "Msys" ] ; then
-  if [ ! -d ancillary/windows/lib ] ; then
+  if [ ! -d ancillary/lib ] ; then
     echo making windows ancillary extras
-    cd ancillary/windows
+    cd ancillary
     ./build.sh || exit 1
   fi
 fi

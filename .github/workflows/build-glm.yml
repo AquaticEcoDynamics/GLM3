@@ -1,0 +1,246 @@
+name: Build GLM
+
+# Manually triggered so you can pick which GLM branch/tag to build.
+on:
+  workflow_dispatch:
+    inputs:
+      glm_ref:
+        description: 'GLM branch, tag, or commit to build'
+        required: true
+        default: 'v4alpha'
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: windows
+          - os: ubuntu-latest
+            name: linux
+          - os: macos-latest
+            name: macos
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      # Everything below is checked out/built as siblings under this folder,
+      # matching the layout build_glm.sh expects (GLM, ancillary, libaed-*,
+      # libutil, libplot all next to each other).
+      ROOT: ${{ github.workspace }}
+
+    steps:
+      # ------------------------------------------------------------------
+      # 1. Toolchain. Windows builds its C/Fortran dependency chain from
+      #    source (see the ancillary/ steps further down), so it only
+      #    needs the compilers themselves via choco. Linux and macOS get
+      #    netcdf-c/netcdf-fortran/gd from their system package manager
+      #    instead - same as how this project ships its own .deb package
+      #    (see debian/control) and documents macOS builds (README.Macintosh).
+      # ------------------------------------------------------------------
+      - name: "Toolchain (Windows): install make/mingw/cmake via chocolatey"
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          choco install -y make
+          choco install -y mingw
+          choco install -y cmake --installargs 'ADD_CMAKE_TO_PATH=System'
+
+      - name: "Toolchain (Windows): put mingw + cmake on PATH for later steps"
+        if: matrix.os == 'windows-latest'
+        run: |
+          echo "C:\ProgramData\mingw64\mingw64\bin" >> "$GITHUB_PATH"
+          echo "C:\Program Files\CMake\bin" >> "$GITHUB_PATH"
+
+      - name: "Toolchain (Linux): install via apt"
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          # libx11-dev is only needed for --xdisp (the interactive plot
+          # window); drop it (and WITH_XPLOTS below) if you don't need that.
+          sudo apt-get install -y gfortran gcc make git \
+            libnetcdf-dev libnetcdff-dev libgd-dev libx11-dev
+
+      - name: "Toolchain (macOS): install via Homebrew"
+        if: matrix.os == 'macos-latest'
+        run: |
+          brew install gcc netcdf netcdf-fortran gd
+          # Homebrew's gcc formula installs versioned binaries (gfortran-14,
+          # gcc-14, ...), not a plain "gfortran"/"gcc" - resolve whatever
+          # version actually got installed instead of hardcoding one.
+          GCC_VER=$(brew list --versions gcc | awk '{print $2}' | cut -d. -f1)
+          echo "FC=gfortran-${GCC_VER}" >> "$GITHUB_ENV"
+          echo "CC=gcc-${GCC_VER}" >> "$GITHUB_ENV"
+          echo "HOMEBREW=true" >> "$GITHUB_ENV"
+
+      - name: Sanity-check toolchain
+        run: |
+          gcc --version | head -1
+          gfortran --version | head -1
+          make --version | head -1
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then cmake --version | head -1; fi
+
+      # ------------------------------------------------------------------
+      # 2. Checkout GLM at the chosen ref, plus the sibling repos it needs.
+      #    build_glm.sh assumes GLM sits next to AED_Tools/libaed-*/libutil/
+      #    libplot in one common parent directory (this workspace root).
+      # ------------------------------------------------------------------
+      - name: Checkout GLM
+        uses: actions/checkout@v4
+        with:
+          repository: limnotrack/GLM
+          ref: ${{ inputs.glm_ref }}
+          path: GLM
+
+      - name: Checkout AED_Tools and sibling libraries
+        run: |
+          cd "$ROOT"
+          # AED_Tools comes from limnotrack's fork, not upstream: it carries
+          # a netcdf-c/netcdf-fortran build fix (build_netcdf_c.inc/
+          # build_netcdf_f.inc -fpermissive, commit 5a9a1ff) not yet merged
+          # into AquaticEcoDynamics/AED_Tools. Switch this back to
+          # AquaticEcoDynamics/AED_Tools once that PR lands upstream.
+          git clone --depth 1 "https://github.com/limnotrack/AED_Tools.git"
+
+          # libaed-api and libaed2 are mutually exclusive, branch-specific
+          # dependencies, not universal ones:
+          #  - v4alpha has a WITH_API/libaed-api plugin feature; AED2 doesn't
+          #    exist there at all (no Makefile support, no build_glm.sh flag).
+          #  - master needs libaed2 (its GLM_CONFIG sets AED2=true by
+          #    default, and build_glm.sh unconditionally cd's into it when
+          #    that's set); it has no WITH_API/libaed-api concept.
+          # Cloning the wrong one is just wasted time; cloning neither is a
+          # hard build failure. Add more branches here as needed.
+          SIBLINGS="libaed-water libaed-benthic libaed-demo libutil libplot"
+          if [ "${{ inputs.glm_ref }}" = "v4alpha" ]; then
+            SIBLINGS="$SIBLINGS libaed-api"
+          else
+            SIBLINGS="$SIBLINGS libaed2"
+          fi
+          for repo in $SIBLINGS; do
+            git clone --depth 1 "https://github.com/AquaticEcoDynamics/${repo}.git"
+          done
+
+      # ------------------------------------------------------------------
+      # 3. Stage the files build_glm.sh needs but that GLM's own repo does
+      #    NOT track: build_env.inc / build_aedlibs.inc (sourced by
+      #    build_glm.sh) and the ancillary/ dependency-build pipeline.
+      #    Both come from AED_Tools, which is the documented starting
+      #    point for AED/GLM builds. On Linux/macOS this is only a
+      #    fallback: build_env.inc auto-detects whether apt's/Homebrew's
+      #    netcdf-c/netcdf-fortran/gd are already found (via nc-config/
+      #    nf-config/gd.h) and only falls back to building from ancillary/
+      #    if something's missing.
+      # ------------------------------------------------------------------
+      - name: Stage build_env.inc, build_aedlibs.inc and ancillary/
+        run: |
+          cd "$ROOT"
+          cp AED_Tools/build_env.inc .
+          cp AED_Tools/build_aedlibs.inc .
+          cp -r AED_Tools/ancillary .
+
+      # ------------------------------------------------------------------
+      # 4. Build the ancillary C/Fortran dependency chain: zlib, libaec,
+      #    curl, hdf5, netcdf-c, netcdf-fortran, jpeg, libpng, freetype,
+      #    gd. Windows-only - this is the slow part (~20-30 min from
+      #    cold), so it's cached independently of the GLM source itself,
+      #    and the patches/workarounds below only need to run on a cache
+      #    miss.
+      # ------------------------------------------------------------------
+      - name: Cache ancillary dependencies (Windows only)
+        if: matrix.os == 'windows-latest'
+        id: ancillary-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ github.workspace }}/ancillary/lib
+            ${{ github.workspace }}/ancillary/include
+            ${{ github.workspace }}/ancillary/bin
+            ${{ github.workspace }}/ancillary/share
+          # Bump the trailing version suffix if you change any of the
+          # patches below, or if ancillary/sources/versions.inc changes.
+          key: glm-ancillary-windows-v1-${{ hashFiles('ancillary/sources/versions.inc') }}
+
+      - name: Build ancillary dependencies (Windows only)
+        if: matrix.os == 'windows-latest' && steps.ancillary-cache.outputs.cache-hit != 'true'
+        run: |
+          cd "$ROOT/ancillary"
+          export FINALDIR="$ROOT/ancillary"
+          # CC/FC must be exported explicitly: the jpeg build step only
+          # writes its Makefile "if [ \"$CC\" != \"\" ]", so without this
+          # it silently produces no Makefile at all.
+          export CC=gcc
+          export FC=gfortran
+          ./build.sh --all
+
+      # build_env.inc's gd detection only checks the literal path
+      # /usr/include/gd.h, which Homebrew never installs to (it uses
+      # /opt/homebrew or /usr/local). Left as-is, that makes it fall back to
+      # building gd from source via ancillary/ every run, which is slow and
+      # untested on macOS. Pointing Homebrew's gd.h at the path it checks
+      # avoids that - if /usr/include isn't writable on the runner, this
+      # step is harmless to skip; build_glm.sh will just fall back to
+      # ancillary/ instead.
+      - name: "Workaround: make Homebrew's gd.h visible to build_env.inc's detection (macOS only)"
+        if: matrix.os == 'macos-latest'
+        run: |
+          GD_INCLUDE="$(brew --prefix gd)/include/gd.h"
+          sudo mkdir -p /usr/include 2>/dev/null || true
+          sudo cp "$GD_INCLUDE" /usr/include/gd.h 2>/dev/null || \
+            echo "could not stage /usr/include/gd.h - build_glm.sh will build gd from source via ancillary/ instead"
+
+      # ------------------------------------------------------------------
+      # 5. Build GLM itself.
+      # ------------------------------------------------------------------
+      - name: Build GLM
+        run: |
+          cd "$ROOT/GLM"
+          ./build_glm.sh
+
+      - name: Verify glm runs
+        run: |
+          cd "$ROOT/GLM"
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            PATH="$ROOT/ancillary/bin:$PATH" ./glm.exe --version
+          else
+            ./glm --version
+          fi
+
+      # ------------------------------------------------------------------
+      # 6. Package the binary for upload. Windows gets its runtime DLLs
+      #    bundled alongside it so the artifact is self-contained; Linux
+      #    and macOS binaries are dynamically linked against system
+      #    packages (apt/Homebrew) instead, so they're only guaranteed to
+      #    run on a matching machine, not a portable bundle - ldd/otool
+      #    output is recorded alongside them for reference.
+      # ------------------------------------------------------------------
+      - name: Assemble distributable folder
+        run: |
+          mkdir -p "$ROOT/glm_dist"
+          case "${{ matrix.os }}" in
+            windows-latest)
+              cp "$ROOT/GLM/glm.exe" "$ROOT/glm_dist/"
+              cp "$ROOT/ancillary/bin/libgd.dll" "$ROOT/glm_dist/"
+              cp "$ROOT/ancillary/bin/libnetcdf.dll" "$ROOT/glm_dist/"
+              cp "C:/ProgramData/mingw64/mingw64/bin/libgfortran-5.dll" "$ROOT/glm_dist/"
+              cp "C:/ProgramData/mingw64/mingw64/bin/libquadmath-0.dll" "$ROOT/glm_dist/"
+              cp "C:/ProgramData/mingw64/mingw64/bin/libgcc_s_seh-1.dll" "$ROOT/glm_dist/"
+              cp "C:/ProgramData/mingw64/mingw64/bin/libwinpthread-1.dll" "$ROOT/glm_dist/"
+              ;;
+            ubuntu-latest)
+              cp "$ROOT/GLM/glm" "$ROOT/glm_dist/"
+              ldd "$ROOT/GLM/glm" > "$ROOT/glm_dist/ldd-dependencies.txt" || true
+              ;;
+            macos-latest)
+              cp "$ROOT/GLM/glm" "$ROOT/glm_dist/"
+              otool -L "$ROOT/GLM/glm" > "$ROOT/glm_dist/otool-dependencies.txt" || true
+              ;;
+          esac
+
+      - name: Upload glm_dist artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: glm-${{ matrix.name }}-${{ inputs.glm_ref }}
+          path: glm_dist

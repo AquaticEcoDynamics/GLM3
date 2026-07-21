@@ -107,7 +107,16 @@ else ifeq ($(OSTYPE),Msys)
     CINCLUDES+=-I../ancillary/windows/include
     LIBS+=-L../ancillary/windows/lib
   endif
+  SHARED=-shared
   so_ext=dll
+  # do_model_non_avg (and siblings) declare several MaxInf/MaxOut/MaxVars-sized
+  # arrays (WQNew[MaxInf*MaxVars] alone is 10000*60 doubles, ~4.8MB) as plain
+  # locals rather than heap-allocating them. That fits fine under Linux/macOS's
+  # ~8MB default thread stack, but silently overflows Windows' 2MB default
+  # link-time stack reserve - crashing with no error message right on entry to
+  # the function, before any of its own code runs. Reserve more stack at link
+  # time until these arrays are heap-allocated properly upstream.
+  EXTRALINKFLAGS=-Wl,--stack,67108864
 else ifeq ($(OSTYPE),FreeBSD)
   FINCLUDES+=-I/usr/local/flang/include -I/usr/local/include
   CINCLUDES+=-I/usr/local/include
@@ -115,14 +124,15 @@ else ifeq ($(OSTYPE),FreeBSD)
   ifeq ($(MDEBUG),true)
     DBG_LIBS=-fsanitize=address -static-libsan
   endif
+  SHARED=-shared
   so_ext=so
 else
   CINCLUDES+=-I/usr/local/include
   EXTRALINKFLAGS=-Wl,-z,relro,--export-dynamic
   ifeq ($(MDEBUG),true)
     DBG_LIBS=-fsanitize=address -static-libasan
-    SHARED=-shared
   endif
+  SHARED=-shared
   so_ext=so
 endif
 
@@ -432,10 +442,10 @@ glm+: ${objdir} ${moddir} $(OBJS) $(GLMOBJS) $(GLM_DEPS) $(RESP)
 # Shared library for Python/ctypes (libglm.so or libglm.dylib)
 # Build after: make glm (or glm+). Requires AED libs. Use: make libglm.so WITH_PLOTS=false
 libglm.${so_ext}: ${objdir} ${moddir} $(OBJS) $(LIBOBJS) $(GLM_DEPS)
-	$(FC) -shared -Wl,--no-undefined -o $@ $(OBJS) $(LIBOBJS) $(RES) $(WQLIBS) $(LIBS) $(FLIBS)
+	$(FC) ${SHARED} -o $@ $(OBJS) $(LIBOBJS) $(RES) $(WQLIBS) $(LIBS) $(FLIBS)
 
 libglm+.${so_ext}: ${objdir} ${moddir} $(OBJS) $(LIBOBJS) $(GLM_DEPS)
-	$(FC) -shared -Wl,--no-undefined -o $@ $(OBJS) $(LIBOBJS) $(RESP) $(WQLIBS) $(LIBS) $(FLIBS)
+	$(FC) ${SHARED} -o $@ $(OBJS) $(LIBOBJS) $(RESP) $(WQLIBS) $(LIBS) $(FLIBS)
 
 clean: ${objdir} ${moddir}
 	@touch ${objdir}/1.o ${moddir}/1.mod 1.t 1__genmod.f90 glm 1.${so_ext} glm_test_bird macos/glm.app macos/glm+.app
