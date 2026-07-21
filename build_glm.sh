@@ -147,9 +147,9 @@ if [ "$OSTYPE" = "FreeBSD" ] ; then
   # ./fetch.sh
   # ${MAKE} || exit 1
 elif [ "$OSTYPE" = "Msys" ] ; then
-  if [ ! -d ancillary/windows ] ; then
+  if [ ! -d ancillary/lib ] ; then
     echo making windows ancillary extras
-    cd ancillary/windows
+    cd ancillary
     ./build.sh || exit 1
   fi
 fi
@@ -190,40 +190,45 @@ cd "${CURDIR}/.."
 
 # =====================================================================
 # Package building bit
+#
+# Disabled: building a .deb here requires dh_testdir/fakeroot (debhelper)
+# to be installed, which a plain build environment doesn't have by
+# default. Uncomment if you actually want to produce a .deb from this
+# script; otherwise `make` alone already leaves glm/glm+ built above.
 
 # ***************************** Linux *********************************
-if [ "$OSTYPE" = "Linux" ] ; then
-  if [ $(lsb_release -is) = Ubuntu ] ; then
-    BINPATH=binaries/ubuntu/$(lsb_release -rs)
-    if [ ! -d "${BINPATH}" ] ; then
-      mkdir -p "${BINPATH}"/
-    fi
-    cd ${CURDIR}
-    if [ -x glm+ ] ; then
-       /bin/cp debian/control-with+ debian/control
-    else
-       /bin/cp debian/control-no+ debian/control
-    fi
-    VERSDEB=`head -1 debian/changelog | cut -f2 -d\( | cut -f1 -d-`
-    echo debian version $VERSDEB
-    if [ "$VERSION" != "$VERSDEB" ] ; then
-      echo updating debian version
-      dch --newversion ${VERSION}-0 "new version ${VERSION}"
-    fi
-    VERSRUL=`grep 'version=' debian/rules | cut -f2 -d=`
-    if [ "$VERSION" != "$VERSRUL" ] ; then
-      sed -i "s/version=$VERSRUL/version=$VERSION/" debian/rules
-    fi
-
-    fakeroot ${MAKE} -f debian/rules binary || exit 1
-
-    cd ..
-
-    mv glm*.deb ${BINPATH}/
-  else
-    BINPATH="binaries/$(lsb_release -is)/$(lsb_release -rs)"
-    echo "No package build for $(lsb_release -is)"
-  fi
-fi
+# if [ "$OSTYPE" = "Linux" ] ; then
+#   if [ $(lsb_release -is) = Ubuntu ] ; then
+#     BINPATH=binaries/ubuntu/$(lsb_release -rs)
+#     if [ ! -d "${BINPATH}" ] ; then
+#       mkdir -p "${BINPATH}"/
+#     fi
+#     cd ${CURDIR}
+#     if [ -x glm+ ] ; then
+#        /bin/cp debian/control-with+ debian/control
+#     else
+#        /bin/cp debian/control-no+ debian/control
+#     fi
+#     VERSDEB=`head -1 debian/changelog | cut -f2 -d\( | cut -f1 -d-`
+#     echo debian version $VERSDEB
+#     if [ "$VERSION" != "$VERSDEB" ] ; then
+#       echo updating debian version
+#       dch --newversion ${VERSION}-0 "new version ${VERSION}"
+#     fi
+#     VERSRUL=`grep 'version=' debian/rules | cut -f2 -d=`
+#     if [ "$VERSION" != "$VERSRUL" ] ; then
+#       sed -i "s/version=$VERSRUL/version=$VERSION/" debian/rules
+#     fi
+#
+#     fakeroot ${MAKE} -f debian/rules binary || exit 1
+#
+#     cd ..
+#
+#     mv glm*.deb ${BINPATH}/
+#   else
+#     BINPATH="binaries/$(lsb_release -is)/$(lsb_release -rs)"
+#     echo "No package build for $(lsb_release -is)"
+#   fi
+# fi
 
 exit 0
