@@ -34,6 +34,18 @@ case `uname` in
     ;;
 esac
 
+case $OSTYPE in
+  Darwin)
+    export LIB_EXT=dylib
+    ;;
+  Msys)
+    export LIB_EXT=dll
+    ;;
+  *)
+    export LIB_EXT=so
+    ;;
+esac
+
 if [ "$OSTYPE" = "FreeBSD" ] ; then
   export FC=flang
   export CC=clang
@@ -72,6 +84,12 @@ while [ $# -gt 0 ] ; do
     --without-aed-plus)
       export WITH_AED_PLUS=false
       ;;
+    --with-lib)
+      export WITH_LIB=true
+      ;;
+    --without-lib)
+      export WITH_LIB=false
+      ;;
     --gfort)
       export FC=gfortran
       ;;
@@ -81,8 +99,8 @@ while [ $# -gt 0 ] ; do
     --ifort)
       export FC=ifort
       ;;
-    --flang-new)
-      export FC=flang-new
+    --clang)
+      export CC=clang
       ;;
     --flang)
       export FC=flang
@@ -90,6 +108,28 @@ while [ $# -gt 0 ] ; do
     --no-gui)
       export WITH_PLOTS=false
       export WITH_XPLOTS=false
+      ;;
+    --auto-prereq)
+      export AUTO_PREQ=true
+      ;;
+    --help)
+      echo "build_glm accepts the following flags:"
+      echo "  --debug            : build with debugging symbols"
+      echo "  --gfort            : use the gfortran compiler"
+      echo "  --ifort            : use the older intel fortran compiler"
+      echo "  --ifx              : use the newer intel fortran compiler"
+      echo "  --clang            : use the clang C/C++ compiler"
+      echo "  --flang            : use the flang fortran compiler"
+      echo
+      echo "  --with-aed-plus    : build with aed and aed-plus enabled"
+      echo "  --without-aed-plus : build without aed and aed-plus enabled"
+      echo "  --with-lib         : build library (libglm) as well"
+      echo "  --without-lib      : dont build libglm (default)"
+      echo
+      echo "  --auto-prereq      : if needed, also build ancillary pre-requirments"
+      echo
+
+      exit 0
       ;;
     *)
       ;;
@@ -118,7 +158,7 @@ if [ "$FABM" = "true" ] ; then
     export FABM=false
   else
     which cmake > /dev/null 2>&1
-    if [ $? != 0 ] ; then
+    if [ $? -ne 0 ] ; then
       echo "cmake not found - FABM cannot be built"
       export FABM=false
     fi
@@ -154,15 +194,10 @@ if [ -d "${UTILDIR}" ] ; then
   cd "${CWD}"
 fi
 
-if [ "$OSTYPE" = "FreeBSD" ] ; then
-  echo not making flang extras
-  # cd ancillary/freebsd
-  # ./fetch.sh
-  # ${MAKE} || exit 1
-elif [ "$OSTYPE" = "Msys" ] ; then
-  if [ ! -d ancillary/windows/lib ] ; then
+if [ "$OSTYPE" = "Msys" ] ; then
+  if [ ! -d ancillary/lib ] ; then
     echo making windows ancillary extras
-    cd ancillary/windows
+    cd ancillary
     ./build.sh || exit 1
   fi
 fi
@@ -192,15 +227,26 @@ cd "${CURDIR}"
 get_commit_id >> ${CWD}/cur_state.log
 
 export LIBRARY_PATH=$LIB
-${MAKE} AEDBENDIR=$DAEDBENDIR AEDDMODIR=$DAEDDMODIR || exit 1
+if [ "$WITH_LIB" = "true" ] ; then
+  LIBTARG="libglm.${LIB_EXT}"
+else
+  LIBTARG=""
+fi
+${MAKE} glm $LIBTARG AEDBENDIR=$DAEDBENDIR AEDDMODIR=$DAEDDMODIR || exit 1
 if [ "${DAEDDEVDIR}" != "" ] ; then
   if [ -d "${DAEDDEVDIR}" ] ; then
     echo now build plus version
     /bin/rm obj/aed_external.o
     /bin/rm obj/glm_main.o
-    ${MAKE} glm+ WITH_AED_PLUS=1 AEDBENDIR=$DAEDBENDIR AEDDMODIR=$DAEDDMODIR \
-                                 AEDRIPDIR=$DAEDRIPDIR AEDLGTDIR=$DAEDLGTDIR \
-                                 AEDDEVDIR=$DAEDDEVDIR PHREEQDIR=$PHREEQDIR || exit 1
+    if [ "$WITH_LIB" = "true" ] ; then
+      LIBTARG="libglm+.${LIB_EXT}"
+    else
+      LIBTARG=""
+    fi
+    ${MAKE} glm+ $LIBTARG WITH_AED_PLUS=1 \
+                     AEDBENDIR=$DAEDBENDIR AEDDMODIR=$DAEDDMODIR \
+                     AEDRIPDIR=$DAEDRIPDIR AEDLGTDIR=$DAEDLGTDIR \
+                     AEDDEVDIR=$DAEDDEVDIR PHREEQDIR=$PHREEQDIR || exit 1
   fi
 fi
 

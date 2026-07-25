@@ -271,34 +271,43 @@ void calc_mass_temp(const char *msg)
  ******************************************************************************/
 void do_model(int jstart, int nsave)
 {
-    AED_REAL FlowNew[MaxInf], DrawNew[MaxOut], WithdrTempNew;
-    AED_REAL FlowOld[MaxInf], DrawOld[MaxOut], WithdrTempOld;
+    AED_REAL *FlowNew = NULL, *DrawNew = NULL, WithdrTempNew;
+    AED_REAL *FlowOld = NULL, *DrawOld = NULL, WithdrTempOld;
 
     MetDataType MetOld, MetNew;
     AED_REAL    SWold, SWnew, DailyKw, DailyEvap;
 
-   /***************************************************************************
-    *CAB Note: these WQ arrays should be sized to Num_WQ_Vars not MaxVars,    *
-    *           look into that later ....                                     *
-    ***************************************************************************/
-    AED_REAL SaltNew[MaxInf], TempNew[MaxInf], WQNew[MaxInf * MaxVars];
-    AED_REAL SaltOld[MaxInf], TempOld[MaxInf], WQOld[MaxInf * MaxVars];
+    AED_REAL *SaltNew = NULL, *TempNew = NULL, *WQNew = NULL;
+    AED_REAL *SaltOld = NULL, *TempOld = NULL, *WQOld = NULL;
     // NOTE: despite the name, Elev[] holds inflow HEIGHT above the lake bottom
     // (same units as InflowDataType.SubmHeight / NML subm_height), NOT elevation
     // above sea level.  The name and the CSV column ("elev") are legacy from when
     // the field was called SubmElev.  The CSV column name is kept to avoid breaking
     // existing user inflow files.
-    AED_REAL Elev[MaxInf];
-    AED_REAL ElevOut[MaxOut];     // Outflow elevation (above sea level) for Type 6 submerged outflow
-    AED_REAL HeatFluxOut[MaxOut]; // Outflow heat flux array for dynamic heat pump support
+    AED_REAL *Elev = NULL;
+    AED_REAL *ElevOut = NULL;     // Outflow elevation (above sea level) for Type 6 submerged outflow
+    AED_REAL *HeatFluxOut = NULL; // Outflow heat flux array for dynamic heat pump support
     int jday, ntot, stepnum, stoptime;
     int i, j;
     AED_REAL day_fraction;
 
     /*------------------------------------------------------------------------*/
+   /***************************************************************************
+    *CAB Note: these WQ arrays should be sized to Num_WQ_Vars not MaxVars,    *
+    *           look into that later ....                                     *
+    ***************************************************************************/
+    SaltNew = malloc(sizeof(AED_REAL)*NumInf);
+    TempNew = malloc(sizeof(AED_REAL)*NumInf);
+    WQNew = malloc(sizeof(AED_REAL)*(NumInf*MaxVars));
+    SaltOld = malloc(sizeof(AED_REAL)*NumInf);
+    TempOld = malloc(sizeof(AED_REAL)*NumInf);
+    WQOld = malloc(sizeof(AED_REAL)*(NumInf*MaxVars));
+    Elev = malloc(sizeof(AED_REAL)*NumInf);
+    ElevOut = malloc(sizeof(AED_REAL)*NumOut);
+    HeatFluxOut = malloc(sizeof(AED_REAL)*NumOut);
 
-    memset(WQNew, 0, sizeof(AED_REAL)*MaxInf*MaxVars);
-    memset(WQOld, 0, sizeof(AED_REAL)*MaxInf*MaxVars);
+    memset(WQNew, 0, sizeof(AED_REAL)*NumInf*MaxVars);
+    memset(WQOld, 0, sizeof(AED_REAL)*NumInf*MaxVars);
 
     /* See note in do_model_non_avg: a mid-day restart resume needs the loaded
      * sub-daily state used verbatim; a midnight resume behaves like a normal
@@ -511,6 +520,12 @@ void do_model(int jstart, int nsave)
     }   //# do while (ntot < nDates)
     if (quiet < 2) { printf("\n"); fflush(stdout); }
     /*----------########### End of main daily loop ################-----------*/
+
+    free(SaltNew); free(TempNew); free(WQNew);
+    free(SaltOld); free(TempOld); free(WQOld);
+    free(Elev);
+    free(ElevOut);
+    free(HeatFluxOut);
 }
 /*++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*/
 

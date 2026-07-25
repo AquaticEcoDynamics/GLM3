@@ -101,12 +101,13 @@ ifeq ($(OSTYPE),Darwin)
   SHARED=-dynamiclib -undefined dynamic_lookup
   so_ext=dylib
 else ifeq ($(OSTYPE),Msys)
-  ifeq ("$(wildcard '../ancillary/windows')", "")
+  ifeq ("$(wildcard '../ancillary')", "")
     LIBS+=-L../ancillary/lib
   else
-    CINCLUDES+=-I../ancillary/windows/include
-    LIBS+=-L../ancillary/windows/lib
+    CINCLUDES+=-I../ancillary/include
+    LIBS+=-L../ancillary/lib
   endif
+  SHARED=-shared
   so_ext=dll
 else ifeq ($(OSTYPE),FreeBSD)
   FINCLUDES+=-I/usr/local/flang/include -I/usr/local/include
@@ -121,8 +122,8 @@ else
   EXTRALINKFLAGS=-Wl,-z,relro,--export-dynamic
   ifeq ($(MDEBUG),true)
     DBG_LIBS=-fsanitize=address -static-libasan
-    SHARED=-shared
   endif
+  SHARED=-shared
   so_ext=so
 endif
 
@@ -432,10 +433,10 @@ glm+: ${objdir} ${moddir} $(OBJS) $(GLMOBJS) $(GLM_DEPS) $(RESP)
 # Shared library for Python/ctypes (libglm.so or libglm.dylib)
 # Build after: make glm (or glm+). Requires AED libs. Use: make libglm.so WITH_PLOTS=false
 libglm.${so_ext}: ${objdir} ${moddir} $(OBJS) $(LIBOBJS) $(GLM_DEPS)
-	$(FC) -shared -Wl,--no-undefined -o $@ $(OBJS) $(LIBOBJS) $(RES) $(WQLIBS) $(LIBS) $(FLIBS)
+	$(FC) ${SHARED} -o $@ $(OBJS) $(LIBOBJS) $(RES) $(WQLIBS) $(LIBS) $(FLIBS)
 
 libglm+.${so_ext}: ${objdir} ${moddir} $(OBJS) $(LIBOBJS) $(GLM_DEPS)
-	$(FC) -shared -Wl,--no-undefined -o $@ $(OBJS) $(LIBOBJS) $(RESP) $(WQLIBS) $(LIBS) $(FLIBS)
+	$(FC) ${SHARED} -o $@ $(OBJS) $(LIBOBJS) $(RESP) $(WQLIBS) $(LIBS) $(FLIBS)
 
 clean: ${objdir} ${moddir}
 	@touch ${objdir}/1.o ${moddir}/1.mod 1.t 1__genmod.f90 glm 1.${so_ext} glm_test_bird macos/glm.app macos/glm+.app
