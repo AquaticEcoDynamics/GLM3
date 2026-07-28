@@ -132,6 +132,8 @@ while [ $# -gt 0 ] ; do
       exit 0
       ;;
     *)
+      echo "Unknown option \"$1\""
+      exit 1
       ;;
   esac
   shift
