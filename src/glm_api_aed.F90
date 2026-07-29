@@ -105,6 +105,7 @@ MODULE glm_api_aed
    AED_REAL,DIMENSION(:,:),ALLOCATABLE,TARGET :: cc_diag
    AED_REAL,DIMENSION(:,:),ALLOCATABLE        :: cc_diag_old
    AED_REAL,DIMENSION(:),  ALLOCATABLE        :: z_prev
+   AED_REAL,DIMENSION(:),  ALLOCATABLE        :: area_prev
    AED_REAL,DIMENSION(:),  ALLOCATABLE,TARGET :: cc_diag_hz
 
    LOGICAL,TARGET :: actv = .TRUE.
@@ -453,6 +454,9 @@ SUBROUTINE api_set_glm_data()                     BIND(C, name=_WQ_SET_GLM_DATA)
    ALLOCATE(z_prev(MaxLayers),stat=status)
    IF (status /= 0) STOP 'allocate_memory(): Error allocating (z_prev)'
    z_prev = zero_
+   ALLOCATE(area_prev(MaxLayers),stat=status)
+   IF (status /= 0) STOP 'allocate_memory(): Error allocating (area_prev)'
+   area_prev = zero_
 
    !# Allocate diagnostic variable array and set all values to zero.
    !# (needed because time-integrated/averaged variables will increment rather than set the array)
@@ -588,6 +592,7 @@ SUBROUTINE api_do_glm(wlev)                             BIND(C, name=_WQ_DO_GLM)
    INTEGER :: lev, zon, j, k, j_d
    INTEGER, SAVE :: wlev_prev = 0
    AED_REAL :: surf, pa, ratio
+   AED_REAL :: I_old, I_new
    TYPE(aed_variable_t),POINTER :: tv
    LOGICAL :: grid_changed
 !
@@ -628,52 +633,17 @@ SUBROUTINE api_do_glm(wlev)                             BIND(C, name=_WQ_DO_GLM)
    !# Reset benthic sheet diagnostics each timestep — api_copy_from_zone accumulates into cc_diag_hz
    cc_diag_hz = 0.
 
-   !# Save snapshot then remap zavg diagnostics onto the new layer grid.
-   cc_diag_old = cc_diag
-   ! ---- ORIGINAL (growth-only remap; revert by re-enabling this block) ----
-   ! Only remapped when layers were ADDED (wlev > wlev_prev); left persisted zavg
-   ! diagnostics (e.g. ch4_ebb_dsfv) on a stale grid during drawdown (wlev shrinking)
-   ! and same-count reshapes. Replaced by the general remap below.
-   !IF (wlev > wlev_prev .AND. wlev_prev > 0) THEN
-   !   j_d = 0
-   !   DO k = 1, n_aed_vars
-   !      IF ( aed_get_var(k, tv) ) THEN
-   !         IF ( tv%var_type == V_DIAGNOSTIC .AND. .NOT. tv%sheet ) THEN
-   !            j_d = j_d + 1
-   !            IF ( tv%zavg ) THEN
-   !               j = 1
-   !               cc_diag(j_d, 1) = cc_diag_old(j_d, 1)
-   !               DO lev = 2, wlev - 1
-   !                  IF (lheights(lev) < z_prev(1)) THEN
-   !                     cc_diag(j_d, lev) = cc_diag_old(j_d, 1)
-   !                  ELSE
-   !                     DO
-   !                        IF (lheights(lev) >= z_prev(j) .AND. lheights(lev) <= z_prev(j+1)) THEN
-   !                           ratio = (lheights(lev) - z_prev(j)) / (z_prev(j+1) - z_prev(j))
-   !                           cc_diag(j_d, lev) = (1.0-ratio)*cc_diag_old(j_d, j) + ratio*cc_diag_old(j_d, j+1)
-   !                           EXIT
-   !                        ELSE
-   !                           IF (j < wlev_prev - 1) THEN
-   !                              j = j + 1
-   !                           ELSE
-   !                              EXIT
-   !                           ENDIF
-   !                        ENDIF
-   !                     ENDDO
-   !                  ENDIF
-   !               ENDDO
-   !               cc_diag(j_d, wlev) = cc_diag_old(j_d, wlev_prev)
-   !            ENDIF
-   !         ENDIF
-   !      ENDIF
-   !   ENDDO
-   !ENDIF
-   ! ---- GENERAL remap: grow, SHRINK (drawdown), or same-count reshape (mixing). ----
-   ! No-op when the grid is unchanged (each new height matches an old one -> ratio 0).
-   ! Linear (intensive) interpolation is correct for rate diagnostics like ch4_ebb_dsfv.
+   !# Remap the PERSISTED (rezero=.FALSE.) zavg diagnostics onto the current
+   !# layer grid. The host zeroes the layer-indexed cc_diag during between-step
+   !# layer restructuring (whenever the grid changes), so the value visible at the
+   !# top of this routine is unreliable. cc_diag_old, snapshotted at the END of the
+   !# previous step (see bottom of routine) on the previous grid, holds the true
+   !# post-benthic value and is the remap source. This lets the bubble module read
+   !# the previous step's ebullition, correctly remapped to the current layers.
    grid_changed = ( wlev /= wlev_prev )
    IF ( .NOT. grid_changed .AND. wlev_prev > 0 ) grid_changed = ANY( lheights(1:wlev) /= z_prev(1:wlev) )
    IF ( grid_changed .AND. wlev_prev > 0 ) THEN
+      !# Grid changed: interpolate cc_diag_old (previous grid) onto the new grid.
       j_d = 0
       DO k = 1, n_aed_vars
          IF ( aed_get_var(k, tv) ) THEN
@@ -701,7 +671,44 @@ SUBROUTINE api_do_glm(wlev)                             BIND(C, name=_WQ_DO_GLM)
                         ENDDO
                      ENDIF
                   ENDDO
+
+                  !# Conserve the area-integral for persisted zavg flux diags
+                  !# (e.g. ch4_ebb_dsfv, mmol/m2/s). Pointwise height interpolation
+                  !# preserves the per-area shape but not Sum(diag*dArea) -- the
+                  !# total the bubble module integrates -- so rescale to the
+                  !# previous step's total. (rezero=.TRUE. diags are wiped in
+                  !# aed_run_model, so only persisted ones reach a reader.)
+                  IF ( .NOT. tv%rezero ) THEN
+                     I_old = zero_
+                     DO lev = 1, wlev_prev
+                        IF (lev == 1) THEN
+                           I_old = I_old + cc_diag_old(j_d,lev)*area_prev(lev)
+                        ELSE
+                           I_old = I_old + cc_diag_old(j_d,lev)*(area_prev(lev)-area_prev(lev-1))
+                        ENDIF
+                     ENDDO
+                     I_new = zero_
+                     DO lev = 1, wlev
+                        IF (lev == 1) THEN
+                           I_new = I_new + cc_diag(j_d,lev)*area(lev)
+                        ELSE
+                           I_new = I_new + cc_diag(j_d,lev)*(area(lev)-area(lev-1))
+                        ENDIF
+                     ENDDO
+                     IF (I_new > 1.0e-30) cc_diag(j_d,:) = cc_diag(j_d,:) * (I_old/I_new)
+                  ENDIF
                ENDIF
+            ENDIF
+         ENDIF
+      ENDDO
+   ELSEIF ( wlev_prev > 0 ) THEN
+      !# Grid unchanged: restore persisted zavg diags from the snapshot (exact).
+      j_d = 0
+      DO k = 1, n_aed_vars
+         IF ( aed_get_var(k, tv) ) THEN
+            IF ( tv%var_type == V_DIAGNOSTIC .AND. .NOT. tv%sheet ) THEN
+               j_d = j_d + 1
+               IF ( tv%zavg .AND. .NOT. tv%rezero ) cc_diag(j_d,1:wlev) = cc_diag_old(j_d,1:wlev)
             ENDIF
          ENDIF
       ENDDO
@@ -710,9 +717,14 @@ SUBROUTINE api_do_glm(wlev)                             BIND(C, name=_WQ_DO_GLM)
    doSurface = .NOT. ice
    CALL aed_run_model(1, wlev, doSurface)
 
-   !# Save layer count and heights for interpolation on next timestep
+   !# Save layer count, heights and cumulative areas for interpolation on next timestep
    wlev_prev = wlev
    z_prev(1:wlev) = lheights(1:wlev)
+   area_prev(1:wlev) = area(1:wlev)
+
+   !# Snapshot the persisted zavg diag AFTER the benthic update, before the host
+   !# can zero it during layer restructuring. This is the remap source next step.
+   cc_diag_old = cc_diag
 
 END SUBROUTINE api_do_glm
 !+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++

@@ -145,6 +145,7 @@ SUBROUTINE api_calc_zone_areas(aedZones, n_zones, areas, wheights, wlev)
       aedZones(1)%z_env%z_pc_wet = 1.0
    ENDIF
    DO lev=2, wlev
+      ! areas() here is the INCREMENTAL layer area, so summing it gives the zone band area
       IF (wheights(lev) <= aedZones(zon)%z_env%z_height) THEN
          aedZones(zon)%z_env%z_area = aedZones(zon)%z_env%z_area + areas(lev)
       ELSEIF (wheights(lev) > aedZones(zon)%z_env%z_height .AND. wheights(lev-1) < aedZones(zon)%z_env%z_height) THEN
@@ -171,6 +172,7 @@ SUBROUTINE api_calc_zone_areas(aedZones, n_zones, areas, wheights, wlev)
    DO zon=1, n_zones
       aedZones(zon)%z_env%z_pres = -aedZones(zon)%z_env%z_height
       aedZones(zon)%z_env%z_col_area = aedZones(zon)%z_env%z_area
+      theZones(zon)%zarea = aedZones(zon)%z_env%z_area     ! for netCDF 'zarea' output
    ENDDO
 END SUBROUTINE api_calc_zone_areas
 !+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++

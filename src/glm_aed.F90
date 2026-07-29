@@ -842,8 +842,9 @@ SUBROUTINE aed_do_glm(wlev)                             BIND(C, name=_WQ_DO_GLM)
 !LOCALS
    TYPE(aed_variable_t),POINTER :: tv
 
-   AED_REAL :: min_C, surf, ratio
+   AED_REAL :: min_C, surf, ratio, localext_post
    INTEGER  :: i, j, v, lev, split, k, j_d
+   INTEGER  :: d_rz, sd_rz     ! rezero counters (independent of j_d / other index vars)
    INTEGER, SAVE :: wlev_prev = 0
    LOGICAL  :: grid_changed
 
@@ -887,8 +888,27 @@ SUBROUTINE aed_do_glm(wlev)                             BIND(C, name=_WQ_DO_GLM)
 
    IF ( .NOT. reinited ) CALL re_initialize
 
-   !cc_diag = 0.    ! not reset — zavg diagnostics (e.g. ch4_ebb_dsfv) must persist between timesteps
-   cc_diag_hz = 0.   ! Reset benthic diagnostics; will be re-populated in modules
+   ! Per-variable rezero — matches API path (aed_api.F90 aed_run_model, lines 1385-1397).
+   ! Each diagnostic is registered with a `rezero` flag (default .TRUE.).  Vars flagged
+   ! rezero=.FALSE. (e.g. CH4_ch4_ebb_dsfv, aed_methane.F90:387) must persist across
+   ! timesteps; every other diagnostic should be cleared here so its value reflects only
+   ! the current timestep.  The previous "!cc_diag = 0." blanket-off protected the zavg
+   ! ones but left stale values in per-timestep 3D diagnostics such as BUB_Cbg_Wch4_*,
+   ! BUB_gas_exchange_Wch4, BUB_bDiff_Wch4 etc.  This restores the correct behaviour.
+   d_rz = 0; sd_rz = 0
+   DO i = 1, n_aed_vars
+      IF ( aed_get_var(i, tv) ) THEN
+         IF ( tv%var_type == V_DIAGNOSTIC ) THEN
+            IF ( tv%sheet ) THEN
+               sd_rz = sd_rz + 1
+               IF ( tv%rezero ) cc_diag_hz(sd_rz) = zero_
+            ELSE
+               d_rz = d_rz + 1
+               IF ( tv%rezero ) cc_diag(d_rz, :) = zero_
+            ENDIF
+         ENDIF
+      ENDIF
+   ENDDO
 
    ! Save snapshot then remap zavg diagnostics onto the new layer grid.
    cc_diag_old = cc_diag
@@ -931,33 +951,34 @@ SUBROUTINE aed_do_glm(wlev)                             BIND(C, name=_WQ_DO_GLM)
    !   ENDDO
    !ENDIF
    ! ---- GENERAL remap: grow, SHRINK (drawdown), or same-count reshape (mixing). ----
-   ! No-op when the grid is unchanged (each new height matches an old one -> ratio 0).
-   ! Linear (intensive) interpolation is correct for rate diagnostics like ch4_ebb_dsfv.
+   ! Only remap CH4_ch4_ebb_dsfv (bubble flux diagnostic) which needs persistence across grid changes.
+   ! Other zavg diagnostics should not be interpolated during grid changes as they may represent
+   ! intensive properties that shouldn't be linearly remapped (revert to old selective approach).
    grid_changed = ( wlev /= wlev_prev )
-   IF ( .NOT. grid_changed .AND. wlev_prev > 0 ) grid_changed = ANY( height(1:wlev) /= z_prev(1:wlev) )
+   IF ( .NOT. grid_changed .AND. wlev_prev > 0 ) grid_changed = ANY( lheights(1:wlev) /= z_prev(1:wlev) )
    IF ( grid_changed .AND. wlev_prev > 0 ) THEN
       j_d = 0
       DO k = 1, n_aed_vars
          IF ( aed_get_var(k, tv) ) THEN
-            IF ( tv%diag .AND. .NOT. tv%sheet ) THEN
+            IF ( tv%var_type == V_DIAGNOSTIC .AND. .NOT. tv%sheet ) THEN
                j_d = j_d + 1
                IF ( tv%zavg ) THEN
-                  DO i = 1, wlev
-                     IF     (height(i) <= z_prev(1))         THEN
-                        cc_diag(j_d, i) = cc_diag_old(j_d, 1)            ! at/below old bottom
-                     ELSEIF (height(i) >= z_prev(wlev_prev)) THEN
-                        cc_diag(j_d, i) = cc_diag_old(j_d, wlev_prev)    ! at/above old top (covers growth)
+                  DO lev = 1, wlev
+                     IF     (lheights(lev) <= z_prev(1))         THEN
+                        cc_diag(j_d, lev) = cc_diag_old(j_d, 1)          ! at/below old bottom
+                     ELSEIF (lheights(lev) >= z_prev(wlev_prev)) THEN
+                        cc_diag(j_d, lev) = cc_diag_old(j_d, wlev_prev)  ! at/above old top (covers growth)
                      ELSE
                         j = 1
                         DO
-                           IF (height(i) >= z_prev(j) .AND. height(i) <= z_prev(j+1)) THEN
-                              ratio = (height(i) - z_prev(j)) / (z_prev(j+1) - z_prev(j))
-                              cc_diag(j_d, i) = (1.0-ratio)*cc_diag_old(j_d, j) + ratio*cc_diag_old(j_d, j+1)
+                           IF (lheights(lev) >= z_prev(j) .AND. lheights(lev) <= z_prev(j+1)) THEN
+                              ratio = (lheights(lev) - z_prev(j)) / (z_prev(j+1) - z_prev(j))
+                              cc_diag(j_d, lev) = (1.0-ratio)*cc_diag_old(j_d, j) + ratio*cc_diag_old(j_d, j+1)
                               EXIT
                            ELSEIF (j < wlev_prev - 1) THEN
                               j = j + 1
                            ELSE
-                              cc_diag(j_d, i) = cc_diag_old(j_d, wlev_prev)
+                              cc_diag(j_d, lev) = cc_diag_old(j_d, wlev_prev)
                               EXIT
                            ENDIF
                         ENDDO
@@ -1063,6 +1084,14 @@ SUBROUTINE aed_do_glm(wlev)                             BIND(C, name=_WQ_DO_GLM)
 
       CALL check_states(wlev)
    ENDDO
+
+   IF (.NOT. link_ext_par) THEN
+      localext_post = zero_
+      DO i = 1, wlev - 1
+         CALL aed_light_extinction(column, i, localext_post)
+         extc(i) = Kw + localext_post
+      ENDDO
+   ENDIF
 
   ! IF ( display_minmax ) THEN
   !    v = 0; d = 0
@@ -1527,8 +1556,8 @@ SUBROUTINE update_light(column, nlev)
    ! Surface Kd
    CALL aed_light_extinction(column, nlev, localext)
 
-   ! Surface PAR
-   par(nlev) = par_fraction * rad(nlev) * EXP( -(Kw+localext)*1e-6*dz(nlev) )
+   ! Surface PAR — matches API path (aed_api.F90 Light) using zz = 0.001
+   par(nlev) = par_fraction * rad(nlev) * EXP( -(Kw+localext) * 0.001 )
 
    ! Now set the top of subsequent layers, down to the bottom
    DO i = (nlev-1),1,-1

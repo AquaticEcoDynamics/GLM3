@@ -170,7 +170,7 @@ SUBROUTINE copy_to_zone(x_cc, x_diag, wlev)
    ! as this is the benthic zone data we need to preserve
    z_cc(1:nvars,:,:) = 0.
    z_diag(:,:,:) = 0.
-!  z_diag_hz(:,:) = 0.
+   z_diag_hz(:,:) = 0.
 
    ! Initialise the zone environment
    theZones%zrad = 0.
