@@ -299,6 +299,10 @@ void do_model(int jstart, int nsave)
     *CAB Note: these WQ arrays should be sized to Num_WQ_Vars not MaxVars,    *
     *           look into that later ....                                     *
     ***************************************************************************/
+    FlowNew = malloc(sizeof(AED_REAL)*NumInf);
+    FlowOld = malloc(sizeof(AED_REAL)*NumInf);
+    DrawNew = malloc(sizeof(AED_REAL)*NumOut);
+    DrawOld = malloc(sizeof(AED_REAL)*NumOut);
     SaltNew = malloc(sizeof(AED_REAL)*NumInf);
     TempNew = malloc(sizeof(AED_REAL)*NumInf);
     WQNew = malloc(sizeof(AED_REAL)*(NumInf*MaxVars));
@@ -505,7 +509,7 @@ void do_model(int jstart, int nsave)
             for (j = 0; j < Num_WQ_Vars; j++)
                 WQ_INF_(WQOld, i, j) = WQ_INF_(WQNew, i, j);
         }
-        for (i = 0; i < MaxOut; i++) DrawOld[i] = DrawNew[i];
+        for (i = 0; i < NumOut; i++) DrawOld[i] = DrawNew[i];
         WithdrTempOld = WithdrTempNew;
         MetOld = MetNew;
         SWold = SWnew;
@@ -524,6 +528,8 @@ void do_model(int jstart, int nsave)
     if (quiet < 2) { printf("\n"); fflush(stdout); }
     /*----------########### End of main daily loop ################-----------*/
 
+    free(FlowNew); free(DrawNew);
+    free(FlowOld); free(DrawOld);
     free(SaltNew); free(TempNew); free(WQNew);
     free(SaltOld); free(TempOld); free(WQOld);
     free(Elev);
