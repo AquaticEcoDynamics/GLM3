@@ -997,6 +997,7 @@ static int mixed_layer_deepening(AED_REAL *WQ_VarsM, int Mixer_Count,
 //fprintf(stderr, " *** %.8e %.8e\n", U_star, coef_wind_drag);
 
     U_star_cub = U_star*U_star*U_star; //# U*^3 handy in mixing calcs
+    SurfData.u_star = U_star;
 
     /**************************************************************************
      * STEP 1 - CONVECTIVE OVERTURN                                           *

@@ -127,7 +127,7 @@ SUBROUTINE api_calc_zone_areas(aedZones, n_zones, areas, wheights, wlev)
 !LOCALS
    INTEGER  :: lev, zon
    LOGICAL  :: w_zones
-   AED_REAL :: surf
+   AED_REAL :: surf, scale
 !
 !-------------------------------------------------------------------------------
 !BEGIN
@@ -145,9 +145,15 @@ SUBROUTINE api_calc_zone_areas(aedZones, n_zones, areas, wheights, wlev)
       aedZones(1)%z_env%z_pc_wet = 1.0
    ENDIF
    DO lev=2, wlev
-      IF ( wheights(lev) > aedZones(zon)%z_env%z_height ) zon = zon + 1
-
-      aedZones(zon)%z_env%z_area = aedZones(zon)%z_env%z_area + areas(lev) - areas(lev-1)
+      ! areas() here is the INCREMENTAL layer area, so summing it gives the zone band area
+      IF (wheights(lev) <= aedZones(zon)%z_env%z_height) THEN
+         aedZones(zon)%z_env%z_area = aedZones(zon)%z_env%z_area + areas(lev)
+      ELSEIF (wheights(lev) > aedZones(zon)%z_env%z_height .AND. wheights(lev-1) < aedZones(zon)%z_env%z_height) THEN
+         scale = (aedZones(zon)%z_env%z_height - wheights(lev-1)) / (wheights(lev) - wheights(lev-1))
+         aedZones(zon)%z_env%z_area = aedZones(zon)%z_env%z_area + areas(lev) * scale
+         zon = zon + 1
+         aedZones(zon)%z_env%z_area = aedZones(zon)%z_env%z_area + areas(lev) * (1-scale)
+      ENDIF
 
       IF ( aedZones(zon)%z_env%z_height > surf ) THEN
          IF (.NOT. w_zones) THEN
@@ -166,6 +172,7 @@ SUBROUTINE api_calc_zone_areas(aedZones, n_zones, areas, wheights, wlev)
    DO zon=1, n_zones
       aedZones(zon)%z_env%z_pres = -aedZones(zon)%z_env%z_height
       aedZones(zon)%z_env%z_col_area = aedZones(zon)%z_env%z_area
+      theZones(zon)%zarea = aedZones(zon)%z_env%z_area     ! for netCDF 'zarea' output
    ENDDO
 END SUBROUTINE api_calc_zone_areas
 !+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -237,15 +244,16 @@ SUBROUTINE api_copy_to_zone(aedZones, n_zones, wheights, x_cc, x_cc_hz, x_diag, 
 
       !z_cc(1:nvars,lev,zon) = z_cc(1:nvars,lev,zon) + x_cc(1:nvars,lev)
 !RQT
-      z_cc(1:nvars,1,zon) = z_cc(1:nvars,1,zon) + x_cc(1:nvars,lev)
+      z_cc(1:nvars,1,zon) = z_cc(1:nvars,1,zon) + x_cc(1:nvars,lev)  ! level=1 to match aedZones(zon)%z_cc => z_cc(:,1,:) pointer
 
-!     z_diag(:,lev,zon)     = z_diag(:,lev,zon) + x_diag(:,lev)
+     !z_diag(:,zon,zon) = z_diag(:,zon,zon) + x_diag(:,lev)      ! level=zon so cell(zon) correct with layer_idx=zon
+      z_diag(:,1,zon) = z_diag(:,1,zon) + x_diag(:,lev)          ! level=1 matches agnostic library wiring z_cc_diag => z_diag(:,1,:) (cell(zon) -> z_diag(:,1,zon))
 
       aedZones(zon)%z_env%z_temp         = aedZones(zon)%z_env%z_temp + theLake(lev)%Temp
       aedZones(zon)%z_env%z_salt         = aedZones(zon)%z_env%z_salt + theLake(lev)%Salinity
       aedZones(zon)%z_env%z_rho          = aedZones(zon)%z_env%z_rho  + theLake(lev)%Density
       aedZones(zon)%z_env%z_rad          = aedZones(zon)%z_env%z_rad  + theLake(lev)%Light
-      !aedZones(zon)%z_env%z_par          = aedZones(zon)%z_env%z_par  + theLake(lev)%Light*0.45
+      aedZones(zon)%z_env%z_par          = aedZones(zon)%z_env%z_par  + theLake(lev)%Light*0.45
       aedZones(zon)%z_env%z_vel          = aedZones(zon)%z_env%z_vel  + theLake(lev)%Umean
       aedZones(zon)%z_env%z_extc         = aedZones(zon)%z_env%z_extc + theLake(lev)%ExtcCoefSW
       aedZones(zon)%z_env%z_layer_stress = aedZones(zon)%z_env%z_layer_stress + theLake(lev)%LayerStress
@@ -255,8 +263,9 @@ SUBROUTINE api_copy_to_zone(aedZones, n_zones, wheights, x_cc, x_cc_hz, x_diag, 
    a_zones = zon
 
    DO zon=1,a_zones
-      z_cc(1:nvars,1,zon) = z_cc(1:nvars,1,zon)/zcount(zon)
-      z_diag(:,1,zon)     = z_diag(:,1,zon)/zcount(zon)
+      z_cc(1:nvars,1,zon) = z_cc(1:nvars,1,zon)/zcount(zon)   ! level=1 to match pointer
+     !z_diag(:,zon,zon)   = z_diag(:,zon,zon)/zcount(zon)    ! level=zon matches accumulation and layer_idx=zon
+      z_diag(:,1,zon)     = z_diag(:,1,zon)/zcount(zon)      ! level=1 matches agnostic library wiring z_cc_diag => z_diag(:,1,:)
 !     z_diag_hz(:,zon)    = z_diag_hz(:,zon)/zcount(zon)
 
       ! Set the water column above a zone, to the respective water layer values
@@ -270,7 +279,7 @@ SUBROUTINE api_copy_to_zone(aedZones, n_zones, wheights, x_cc, x_cc_hz, x_diag, 
          aedZones(zon)%z_env%z_salt         = aedZones(zon)%z_env%z_salt / zcount(zon)
          aedZones(zon)%z_env%z_rho          = aedZones(zon)%z_env%z_rho  / zcount(zon)
          aedZones(zon)%z_env%z_rad          = aedZones(zon)%z_env%z_rad  / zcount(zon)
-         !aedZones(zon)%z_env%z_par          = aedZones(zon)%z_env%z_par  / zcount(zon)
+         aedZones(zon)%z_env%z_par          = aedZones(zon)%z_env%z_par  / zcount(zon)
          aedZones(zon)%z_env%z_vel          = aedZones(zon)%z_env%z_vel  / zcount(zon)
          aedZones(zon)%z_env%z_extc         = aedZones(zon)%z_env%z_extc / zcount(zon)
          aedZones(zon)%z_env%z_layer_stress = aedZones(zon)%z_env%z_layer_stress / zcount(zon)
@@ -279,7 +288,7 @@ SUBROUTINE api_copy_to_zone(aedZones, n_zones, wheights, x_cc, x_cc_hz, x_diag, 
          aedZones(zon)%z_env%z_salt         = 0.
          aedZones(zon)%z_env%z_rho          = 0.
          aedZones(zon)%z_env%z_rad          = 0.
-         !aedZones(zon)%z_env%z_par          = 0.
+         aedZones(zon)%z_env%z_par          = 0.
          aedZones(zon)%z_env%z_vel          = 0.
          aedZones(zon)%z_env%z_extc         = 0.
          aedZones(zon)%z_env%z_layer_stress = 0.
@@ -289,6 +298,22 @@ SUBROUTINE api_copy_to_zone(aedZones, n_zones, wheights, x_cc, x_cc_hz, x_diag, 
    ENDDO
 
    surf = wheights(wlev)
+
+   ! Populate lake-wide sheet globals into each zone's env struct.
+   ! In glm_aed.F90 these are wired as direct pointer-to-pointer; here the zone
+   ! struct holds scalar fields so we copy the live values each timestep.
+   DO zon=1,n_zones
+      aedZones(zon)%z_env%z_col_depth = surf
+      aedZones(zon)%z_env%z_air_pres  = MetData%AirPres
+      aedZones(zon)%z_env%z_air_temp  = MetData%AirTemp
+      aedZones(zon)%z_env%z_wind      = MetData%WindSpeed
+      aedZones(zon)%z_env%z_humidity  = MetData%RelHum
+      aedZones(zon)%z_env%z_rain      = MetData%Rain
+      aedZones(zon)%z_env%z_evap      = SurfData%Evap
+      aedZones(zon)%z_env%z_I_0       = MetData%ShortWave
+      aedZones(zon)%z_env%z_longwave  = MetData%LongWave
+   ENDDO
+
    IF ( surf > aedZones(1)%z_env%z_height ) THEN
       aedZones(1)%z_env%z_depth = aedZones(1)%z_env%z_height
       aedZones(1)%z_env%z_dz = aedZones(1)%z_env%z_height
@@ -376,7 +401,8 @@ SUBROUTINE api_copy_from_zone(aedZones, n_zones, wheights, x_cc, x_cc_hz, x_diag
                   IF ( .NOT.  tvar%sheet ) THEN
                      j = j + 1
                      IF ( tvar%zavg ) THEN
-                        x_diag(j,lev) = z_diag(j,1,zon) * scale
+                       !x_diag(j,lev) = z_diag(j,zon,zon) * scale
+                        x_diag(j,lev) = z_diag(j,1,zon) * scale   ! level=1 matches library z_cc_diag => z_diag(:,1,:)
                      ENDIF
                   ENDIF
                ENDIF
@@ -396,7 +422,8 @@ SUBROUTINE api_copy_from_zone(aedZones, n_zones, wheights, x_cc, x_cc_hz, x_diag
                   IF ( .NOT.  tvar%sheet ) THEN
                      j = j + 1
                      IF ( tvar%zavg ) THEN
-                        x_diag(j,lev) = x_diag(j,lev) + (z_diag(j,1,zon) * (1.0 - scale))
+                       !x_diag(j,lev) = x_diag(j,lev) + (z_diag(j,zon,zon) * (1.0 - scale))
+                        x_diag(j,lev) = x_diag(j,lev) + (z_diag(j,1,zon) * (1.0 - scale))   ! level=1 matches library z_cc_diag => z_diag(:,1,:)
                      ENDIF
                   ENDIF
                ENDIF
@@ -414,7 +441,8 @@ SUBROUTINE api_copy_from_zone(aedZones, n_zones, wheights, x_cc, x_cc_hz, x_diag
                   IF ( .NOT.  tvar%sheet ) THEN
                      j = j + 1
                      IF ( tvar%zavg ) THEN
-                        x_diag(j,lev) = z_diag(j,1,zon)
+                       !x_diag(j,lev) = z_diag(j,zon,zon)
+                        x_diag(j,lev) = z_diag(j,1,zon)   ! level=1 matches library z_cc_diag => z_diag(:,1,:)
                      ENDIF
                   ENDIF
                ENDIF

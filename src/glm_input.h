@@ -65,6 +65,10 @@ void close_inflow_files(void);
 void close_outflow_files(void);
 void close_withdrtemp_files(void);
 
+void open_bubbler_file(const char *fname, const char *timefmt);
+void read_bubble_data(int julian, AED_REAL *aFlow, int *nPorts,
+                                           AED_REAL *bDepth, AED_REAL *bLength);
+
 extern int lw_ind;
 
 /*++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*/

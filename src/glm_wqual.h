@@ -144,6 +144,10 @@ int  aed2_is_var(int *id, const char *v, size_t *len);
 void InitialTemp(int *m, const AED_REAL *depth, const AED_REAL *wv,
                          const AED_REAL *topTemp, const AED_REAL *botTemp,
                          const AED_REAL *nSPinUpDays, AED_REAL *tNew);
+/* cell-centred port: returns the n interior-cell temperatures in tNew(1:n) */
+void InitialTempFV(int *n, const AED_REAL *depth, const AED_REAL *vwc_init,
+                           const AED_REAL *surfTemp, const AED_REAL *deepTemp,
+                           const AED_REAL *spinup_days, const AED_REAL *dt, AED_REAL *tNew);
 void zZSoilTemp(ZoneType *zone);
 void SoilTemp(int *m, const AED_REAL *depth, const AED_REAL *wv,
                       const AED_REAL *topTemp, AED_REAL *temp, const AED_REAL *heatflux);

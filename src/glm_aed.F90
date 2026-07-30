@@ -92,7 +92,9 @@ MODULE glm_aed
    AED_REAL,DIMENSION(:,:),ALLOCATABLE,TARGET :: cc    !# water quality array: [nvars, nlayers]
 !  AED_REAL,DIMENSION(:),  ALLOCATABLE,TARGET :: cc_hz !# water quality array - benthic: [nvars]
    AED_REAL,DIMENSION(:,:),ALLOCATABLE,TARGET :: cc_diag
+   AED_REAL,DIMENSION(:,:),ALLOCATABLE        :: cc_diag_old
    AED_REAL,DIMENSION(:),  ALLOCATABLE,TARGET :: cc_diag_hz
+   AED_REAL,DIMENSION(:),  ALLOCATABLE        :: z_prev
 
    !# Arrays for work, vertical movement, and cross-boundary fluxes
    AED_REAL,DIMENSION(:,:),ALLOCATABLE :: ws
@@ -101,6 +103,7 @@ MODULE glm_aed
    AED_REAL,DIMENSION(:),ALLOCATABLE,TARGET :: sed_zones
 
    AED_REAL,DIMENSION(:),ALLOCATABLE,TARGET :: depth
+   AED_REAL,DIMENSION(:),ALLOCATABLE,TARGET :: layer_area  ! incremental area per layer (area(i)-area(i-1))
    AED_REAL,TARGET :: col_depth
    AED_REAL,TARGET :: col_num = 1
 
@@ -124,6 +127,10 @@ MODULE glm_aed
    AED_REAL,DIMENSION(:),POINTER :: vel
 
    AED_REAL,POINTER :: precip
+   AED_REAL,POINTER :: delzBlueIce
+   AED_REAL,POINTER :: delzWhiteIce
+   AED_REAL,POINTER :: u_star_glm
+   AED_REAL,POINTER :: Q_net_glm
    AED_REAL,POINTER :: evap
    AED_REAL,POINTER :: bottom_stress
    AED_REAL,POINTER :: air_temp
@@ -257,6 +264,10 @@ SUBROUTINE aed_init_glm(i_fname, len, NumWQ_Vars, NumWQ_Ben)                   &
 
    ! new var air_pressure
    tv = aed_provide_sheet_global('air_pres',  'air_pressure',  'Pa')
+   tv = aed_provide_sheet_global('delzBlueIce',  'thickness of blue ice',  'm')
+   tv = aed_provide_sheet_global('delzWhiteIce',  'thickness of white ice',  'm')
+   tv = aed_provide_sheet_global('u_star',  'wind friction velocity',  'm/s')
+   tv = aed_provide_sheet_global('Q_net',   'net non-penetrative heat flux',  'W/m2')
 
    !# Create model tree
    print *,"     Processing aed_models config from ",TRIM(fname)
@@ -397,6 +408,14 @@ SUBROUTINE aed_init_glm(i_fname, len, NumWQ_Vars, NumWQ_Ben)                   &
    IF (rc /= 0) STOP 'allocate_memory(): Error allocating (cc_diag)'
    cc_diag = zero_
 
+   ALLOCATE(cc_diag_old(n_vars_diag, MaxLayers),stat=rc)
+   IF (rc /= 0) STOP 'allocate_memory(): Error allocating (cc_diag_old)'
+   cc_diag_old = zero_
+
+   ALLOCATE(z_prev(MaxLayers),stat=rc)
+   IF (rc /= 0) STOP 'allocate_memory(): Error allocating (z_prev)'
+   z_prev = zero_
+
    !# Allocate diagnostic variable array and set all values to zero.
    !# (needed because time-integrated/averaged variables will increment rather than set the array)
    ALLOCATE(cc_diag_hz(n_vars_diag_sheet),stat=rc)
@@ -528,6 +547,7 @@ SUBROUTINE aed_set_glm_data()                     BIND(C, name=_WQ_SET_GLM_DATA)
    layer_stress => theLake%LayerStress
 
    ALLOCATE(depth(MaxLayers))
+   ALLOCATE(layer_area(MaxLayers))
    ALLOCATE(sed_zones(MaxLayers))
    sed_zones = 0.
 
@@ -548,7 +568,11 @@ SUBROUTINE aed_set_glm_data()                     BIND(C, name=_WQ_SET_GLM_DATA)
    rel_hum => MetData%RelHum
    air_pres => MetData%AirPres
 
-   evap   => SurfData%Evap
+   evap         => SurfData%Evap
+   delzBlueIce  => SurfData%DelzBlueIce
+   delzWhiteIce => SurfData%DelzWhiteIce
+   u_star_glm   => SurfData%u_star
+   Q_net_glm    => SurfData%Q_net
    bottom_stress => layer_stress(botmLayer)
 
    !# Provide pointers to arrays with environmental variables to aed.
@@ -610,6 +634,10 @@ SUBROUTINE check_data
             CASE ( 'evap' )        ; tvar%found = .true.
             CASE ( 'layer_area' )  ; tvar%found = .true.
             CASE ( 'rain' )        ; tvar%found = .true.
+            CASE ( 'delzBlueIce' ) ; tvar%found = .true.
+            CASE ( 'delzWhiteIce' ) ; tvar%found = .true.
+            CASE ( 'u_star' )      ; tvar%found = .true.
+            CASE ( 'Q_net' )       ; tvar%found = .true.
             CASE ( 'air_temp' )    ; tvar%found = .true.
             CASE ( 'air_pres' )    ; tvar%found = .true.
             CASE ( 'humidity' )    ; tvar%found = .true.
@@ -686,13 +714,17 @@ SUBROUTINE define_column(column, top)
             CASE ( 'sed_zones' )   ; column(av)%cell => sed_zones(:)
             CASE ( 'sed_zone' )    ; column(av)%cell_sheet => sed_zones(1)
             CASE ( 'wind_speed' )  ; column(av)%cell_sheet => wnd
+            CASE ( 'delzBlueIce' ) ; column(av)%cell_sheet => delzBlueIce
+            CASE ( 'delzWhiteIce' ) ; column(av)%cell_sheet => delzWhiteIce
+            CASE ( 'u_star' )      ; column(av)%cell_sheet => u_star_glm
+            CASE ( 'Q_net' )       ; column(av)%cell_sheet => Q_net_glm
             CASE ( 'par_sf' )      ; column(av)%cell_sheet => I_0
             CASE ( 'taub' )        ; column(av)%cell_sheet => bottom_stress
             CASE ( 'col_depth' )   ; column(av)%cell_sheet => col_depth
             CASE ( 'col_num' )     ; column(av)%cell_sheet => col_num
             CASE ( 'col_area' )    ; column(av)%cell_sheet => area(top)
             CASE ( 'evap' )        ; column(av)%cell_sheet => evap
-            CASE ( 'layer_area' )  ; column(av)%cell => area(:)
+            CASE ( 'layer_area' )  ; column(av)%cell => layer_area(:)
             CASE ( 'rain' )        ; column(av)%cell_sheet => precip
             CASE ( 'air_temp' )    ; column(av)%cell_sheet => air_temp
             CASE ( 'air_pres' )    ; column(av)%cell_sheet => air_pres
@@ -810,8 +842,11 @@ SUBROUTINE aed_do_glm(wlev)                             BIND(C, name=_WQ_DO_GLM)
 !LOCALS
    TYPE(aed_variable_t),POINTER :: tv
 
-   AED_REAL :: min_C, surf
-   INTEGER  :: i, j, v, lev, split
+   AED_REAL :: min_C, surf, ratio, localext_post
+   INTEGER  :: i, j, v, lev, split, k, j_d
+   INTEGER  :: d_rz, sd_rz     ! rezero counters (independent of j_d / other index vars)
+   INTEGER, SAVE :: wlev_prev = 0
+   LOGICAL  :: grid_changed
 
    TYPE (aed_column_t) :: column(n_aed_vars)
    TYPE (aed_column_t) :: column_sed(n_aed_vars)
@@ -824,9 +859,11 @@ SUBROUTINE aed_do_glm(wlev)                             BIND(C, name=_WQ_DO_GLM)
    !# re-compute the layer heights and depths
    dz(1) = height(1)
    depth(1) = surf - height(1)
+   layer_area(1) = area(1)
    DO i=2,wlev
       dz(i) = height(i) - height(i-1)
       depth(i) = surf - height(i)
+      layer_area(i) = area(i) - area(i-1)   ! incremental area: cumulative area gained at this layer
    ENDDO
 
    !# Calculate local pressure
@@ -851,8 +888,107 @@ SUBROUTINE aed_do_glm(wlev)                             BIND(C, name=_WQ_DO_GLM)
 
    IF ( .NOT. reinited ) CALL re_initialize
 
-   cc_diag = 0.      ! Reset water column diagnostics; will be re-populated in modules
-   cc_diag_hz = 0.   ! Reset benthic diagnostics; will be re-populated in modules
+   ! Per-variable rezero — matches API path (aed_api.F90 aed_run_model, lines 1385-1397).
+   ! Each diagnostic is registered with a `rezero` flag (default .TRUE.).  Vars flagged
+   ! rezero=.FALSE. (e.g. CH4_ch4_ebb_dsfv, aed_methane.F90:387) must persist across
+   ! timesteps; every other diagnostic should be cleared here so its value reflects only
+   ! the current timestep.  The previous "!cc_diag = 0." blanket-off protected the zavg
+   ! ones but left stale values in per-timestep 3D diagnostics such as BUB_Cbg_Wch4_*,
+   ! BUB_gas_exchange_Wch4, BUB_bDiff_Wch4 etc.  This restores the correct behaviour.
+   d_rz = 0; sd_rz = 0
+   DO i = 1, n_aed_vars
+      IF ( aed_get_var(i, tv) ) THEN
+         IF ( tv%var_type == V_DIAGNOSTIC ) THEN
+            IF ( tv%sheet ) THEN
+               sd_rz = sd_rz + 1
+               IF ( tv%rezero ) cc_diag_hz(sd_rz) = zero_
+            ELSE
+               d_rz = d_rz + 1
+               IF ( tv%rezero ) cc_diag(d_rz, :) = zero_
+            ENDIF
+         ENDIF
+      ENDIF
+   ENDDO
+
+   ! Save snapshot then remap zavg diagnostics onto the new layer grid.
+   cc_diag_old = cc_diag
+   ! ---- ORIGINAL (growth-only remap; revert by re-enabling this block) ----
+   ! Only remapped when layers were ADDED (wlev > wlev_prev); left persisted zavg
+   ! diagnostics (e.g. ch4_ebb_dsfv) on a stale grid during drawdown (wlev shrinking)
+   ! and same-count reshapes. Replaced by the general remap below.
+   !IF (wlev > wlev_prev .AND. wlev_prev > 0) THEN
+   !   j_d = 0
+   !   DO k = 1, n_aed_vars
+   !      IF ( aed_get_var(k, tv) ) THEN
+   !         IF ( tv%diag .AND. .NOT. tv%sheet ) THEN
+   !            j_d = j_d + 1
+   !            IF ( tv%zavg ) THEN
+   !               j = 1
+   !               cc_diag(j_d, 1) = cc_diag_old(j_d, 1)
+   !               DO i = 2, wlev - 1
+   !                  IF (height(i) < z_prev(1)) THEN
+   !                     cc_diag(j_d, i) = cc_diag_old(j_d, 1)
+   !                  ELSE
+   !                     DO
+   !                        IF (height(i) >= z_prev(j) .AND. height(i) <= z_prev(j+1)) THEN
+   !                           ratio = (height(i) - z_prev(j)) / (z_prev(j+1) - z_prev(j))
+   !                           cc_diag(j_d, i) = (1.0-ratio)*cc_diag_old(j_d, j) + ratio*cc_diag_old(j_d, j+1)
+   !                           EXIT
+   !                        ELSE
+   !                           IF (j < wlev_prev - 1) THEN
+   !                              j = j + 1
+   !                           ELSE
+   !                              EXIT
+   !                           ENDIF
+   !                        ENDIF
+   !                     ENDDO
+   !                  ENDIF
+   !               ENDDO
+   !               cc_diag(j_d, wlev) = cc_diag_old(j_d, wlev_prev)
+   !            ENDIF
+   !         ENDIF
+   !      ENDIF
+   !   ENDDO
+   !ENDIF
+   ! ---- GENERAL remap: grow, SHRINK (drawdown), or same-count reshape (mixing). ----
+   ! Only remap CH4_ch4_ebb_dsfv (bubble flux diagnostic) which needs persistence across grid changes.
+   ! Other zavg diagnostics should not be interpolated during grid changes as they may represent
+   ! intensive properties that shouldn't be linearly remapped (revert to old selective approach).
+   grid_changed = ( wlev /= wlev_prev )
+   IF ( .NOT. grid_changed .AND. wlev_prev > 0 ) grid_changed = ANY( lheights(1:wlev) /= z_prev(1:wlev) )
+   IF ( grid_changed .AND. wlev_prev > 0 ) THEN
+      j_d = 0
+      DO k = 1, n_aed_vars
+         IF ( aed_get_var(k, tv) ) THEN
+            IF ( tv%var_type == V_DIAGNOSTIC .AND. .NOT. tv%sheet ) THEN
+               j_d = j_d + 1
+               IF ( tv%zavg ) THEN
+                  DO lev = 1, wlev
+                     IF     (lheights(lev) <= z_prev(1))         THEN
+                        cc_diag(j_d, lev) = cc_diag_old(j_d, 1)          ! at/below old bottom
+                     ELSEIF (lheights(lev) >= z_prev(wlev_prev)) THEN
+                        cc_diag(j_d, lev) = cc_diag_old(j_d, wlev_prev)  ! at/above old top (covers growth)
+                     ELSE
+                        j = 1
+                        DO
+                           IF (lheights(lev) >= z_prev(j) .AND. lheights(lev) <= z_prev(j+1)) THEN
+                              ratio = (lheights(lev) - z_prev(j)) / (z_prev(j+1) - z_prev(j))
+                              cc_diag(j_d, lev) = (1.0-ratio)*cc_diag_old(j_d, j) + ratio*cc_diag_old(j_d, j+1)
+                              EXIT
+                           ELSEIF (j < wlev_prev - 1) THEN
+                              j = j + 1
+                           ELSE
+                              cc_diag(j_d, lev) = cc_diag_old(j_d, wlev_prev)
+                              EXIT
+                           ENDIF
+                        ENDDO
+                     ENDIF
+                  ENDDO
+               ENDIF
+            ENDIF
+         ENDIF
+      ENDDO
+   ENDIF
 
    IF ( .NOT. mobility_off ) THEN
       v = 0
@@ -949,6 +1085,14 @@ SUBROUTINE aed_do_glm(wlev)                             BIND(C, name=_WQ_DO_GLM)
       CALL check_states(wlev)
    ENDDO
 
+   IF (.NOT. link_ext_par) THEN
+      localext_post = zero_
+      DO i = 1, wlev - 1
+         CALL aed_light_extinction(column, i, localext_post)
+         extc(i) = Kw + localext_post
+      ENDDO
+   ENDIF
+
   ! IF ( display_minmax ) THEN
   !    v = 0; d = 0
   !    DO i=1,n_aed_vars
@@ -967,6 +1111,11 @@ SUBROUTINE aed_do_glm(wlev)                             BIND(C, name=_WQ_DO_GLM)
   !       ENDIF
   !    ENDDO
   !  ENDIF
+
+   ! Save layer count and heights for interpolation on next timestep
+   wlev_prev = wlev
+   z_prev = 0.
+   z_prev(1:wlev) = height(1:wlev)
 
 CONTAINS
 !-------------------------------------------------------------------------------
@@ -1008,6 +1157,10 @@ CONTAINS
             CASE ( 'sed_zones' )   ; column_sed(av)%cell => theZones(:)%z_sed_zones
             CASE ( 'sed_zone' )    ; column_sed(av)%cell_sheet => theZones(zon)%z_sed_zones; zone_var = av
             CASE ( 'wind_speed' )  ; column_sed(av)%cell_sheet => wnd
+            CASE ( 'delzBlueIce' ) ; column_sed(av)%cell_sheet => delzBlueIce
+            CASE ( 'delzWhiteIce' ) ; column_sed(av)%cell_sheet => delzWhiteIce
+            CASE ( 'u_star' )      ; column_sed(av)%cell_sheet => u_star_glm
+            CASE ( 'Q_net' )       ; column_sed(av)%cell_sheet => Q_net_glm
             CASE ( 'par_sf' )      ; column_sed(av)%cell_sheet => I_0
             CASE ( 'taub' )        ; column_sed(av)%cell_sheet => bottom_stress
             CASE ( 'col_depth' )   ; column_sed(av)%cell_sheet => col_depth
@@ -1109,6 +1262,9 @@ CONTAINS
                ENDIF
             ENDDO
 
+            !# Copy benthic state initial values from cc to this zone's z_cc
+            z_cc(n_vars+1:n_vars+n_vars_ben, 1, zon) = cc(n_vars+1:n_vars+n_vars_ben, 1)
+
             CALL aed_initialize_benthic(column_sed, zon)
 
            !# (4) ZONE COLUMN INITIALISATION
@@ -1147,11 +1303,11 @@ CONTAINS
 
       !# Start with updating column (used for light, bubbles, plants, phreeqc)
 
-!     !# WATER COLUMN UPDATING
-!     DO lev=1,wlev
-!        layer_map(lev) = 1 + wlev-lev
-!     ENDDO
-!     CALL aed_calculate_column(column, layer_map)
+      !# WATER COLUMN UPDATING
+      DO lev=1,wlev
+         layer_map(lev) = 1 + wlev-lev
+      ENDDO
+      CALL aed_calculate_column(column, layer_map)
 
       !# Now do the general calculation all flux terms for RHS in mass/m3/s
       !# Includes (i) benthic flux, (ii) surface exchange and (ii) kinetic updates in each cell
@@ -1209,7 +1365,8 @@ CONTAINS
             DO lev=zlev,wlev
               layer_map(lev) = zlev + wlev-lev
             ENDDO
-            CALL aed_calculate_column(column_sed, layer_map)
+            IF ( benthic_mode .EQ. 3 ) &
+               CALL aed_calculate_column(column_sed, layer_map)   ! only for riparian; bubble module needs full-wlev column, not zone column
 
             IF ( benthic_mode .EQ. 3 ) THEN
                !# Zone is able to operated on by riparian and dry methods
@@ -1236,7 +1393,7 @@ CONTAINS
             flux_pel_pre = flux_pel
 
 !           print*,"Calling ben for zone ",zon,zone_var!,z_sed_zones(zon)
-            CALL aed_calculate_benthic(column_sed, zon, .TRUE.)
+            CALL aed_calculate_benthic(column_sed, zon, .TRUE.)  ! use zon: cell => theZones(:) so cell(zon) = this zone's env vars
 
             !# Record benthic fluxes in the zone array
             flux_zon(:, zon) = flux_ben(:)
@@ -1354,7 +1511,9 @@ SUBROUTINE aed_clean_glm() BIND(C, name=_WQ_CLEAN_GLM)
    CALL aed_delete()
    ! Deallocate internal arrays
    IF (ALLOCATED(cc_diag))      DEALLOCATE(cc_diag)
+   IF (ALLOCATED(cc_diag_old))  DEALLOCATE(cc_diag_old)
    IF (ALLOCATED(cc_diag_hz))   DEALLOCATE(cc_diag_hz)
+   IF (ALLOCATED(z_prev))       DEALLOCATE(z_prev)
 
    IF (ALLOCATED(ws))           DEALLOCATE(ws)
    IF (ALLOCATED(par))          DEALLOCATE(par)
@@ -1363,6 +1522,7 @@ SUBROUTINE aed_clean_glm() BIND(C, name=_WQ_CLEAN_GLM)
    IF (ALLOCATED(uvb))          DEALLOCATE(uvb)
    IF (ALLOCATED(pres))         DEALLOCATE(pres)
    IF (ALLOCATED(dz))           DEALLOCATE(dz)
+   IF (ALLOCATED(layer_area))   DEALLOCATE(layer_area)
 
    IF (ALLOCATED(flux_pel))     DEALLOCATE(flux_pel)
    IF (ALLOCATED(flux_ben))     DEALLOCATE(flux_ben)
@@ -1396,8 +1556,8 @@ SUBROUTINE update_light(column, nlev)
    ! Surface Kd
    CALL aed_light_extinction(column, nlev, localext)
 
-   ! Surface PAR
-   par(nlev) = par_fraction * rad(nlev) * EXP( -(Kw+localext)*1e-6*dz(nlev) )
+   ! Surface PAR — matches API path (aed_api.F90 Light) using zz = 0.001
+   par(nlev) = par_fraction * rad(nlev) * EXP( -(Kw+localext) * 0.001 )
 
    ! Now set the top of subsequent layers, down to the bottom
    DO i = (nlev-1),1,-1

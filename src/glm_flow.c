@@ -47,6 +47,7 @@
 #include "glm_types.h"
 #include "glm_const.h"
 #include "glm_globals.h"
+#include "glm_wqual.h"
 
 #include "glm_util.h"
 #include "glm_mixu.h"
@@ -1307,7 +1308,7 @@ static AED_REAL NewDrawHeight(int jday, int i, int idx_dep, AED_REAL height,
         fprintf(sc_file,"%8d,%8d,%8d,%12.4lf,%12.4lf,%12.4lf,%8d,%8d,%8d,%8d,%12.4lf,%12.4lf,%8d,%8d,%8d,%8d\n",
                          jday,Outflows[i].Type,0,lWithdrawalTemp,maxtemp,mintemp,
                          within_temp_range,within_facility_range,upper_bound,lower_bound,height,
-                         _WQ_Vars(Outflows[i].O2idx,idx_dep),999,999,999,999);
+                         _WQ_Vars(Outflows[i].crit_idx,idx_dep),999,999,999,999);
     }
     return height;
 }
@@ -1340,7 +1341,7 @@ static AED_REAL NewDrawHeightTempdep(int jday, int i, int idx_dep, AED_REAL heig
         fprintf(sc_file,"%8d,%8d,%8d,%12.4lf,%12.4lf,%12.4lf,%8d,%8d,%8d,%8d,%12.4lf,%12.4lf,%8d,%12.4lf,%12.4lf,%12.4lf\n",
                          jday,Outflows[i].Type,0,lWithdrawalTemp,maxtemp,mintemp,
                          within_temp_range,within_facility_range,upper_bound,lower_bound,height,
-                         _WQ_Vars(Outflows[i].O2idx,idx_dep),1,(Outflows[i].Draw * Outflows[i].Factor),
+                         _WQ_Vars(Outflows[i].crit_idx,idx_dep),1,(Outflows[i].Draw * Outflows[i].Factor),
                            (Outflows[i+1].Draw * Outflows[i+1].Factor),Tmix);
     }
     return height;
@@ -1362,25 +1363,26 @@ AED_REAL SpecialConditionDraw(int jday, int i)
     }
 
     /**********************************************************************
-     * Type 3 is fixed outlet heights + check for crit. hypol. oxygen     *
+     * Type 3 is fixed outlet heights + check for critical variable       *
      **********************************************************************/
     if (Outflows[i].Type == 3) {
         if (sc_files[i] == NULL) {
             sc_files[i] = fopen("outlet_values_type_3.txt","w");
-            fprintf(sc_files[i],"JDay,OutletType,CritOXY,DrawHeight,ActOXY\n");
+            fprintf(sc_files[i],"JDay,OutletType,CritFlag,DrawHeight,ActVal\n");
         }
 
-        idx_dep = find_layer_by_height(O2critdep-Base);
+        idx_dep = find_layer_by_height(crit_dep-Base);
 
         if (jday < checkjday) {
             DrawHeight = Outflows[i].Hcrit-Base;       //# withdraw at another fixed height (e.g. bottom outlet)
             if (DrawHeight > Lake[surfLayer].Height)   //get TargetLayerTemp
                 DrawHeight = Lake[surfLayer].Height;
         } else {
+            AED_REAL ActVal = _WQ_Vars(Outflows[i].crit_idx,idx_dep);
             checkjday = -1;
-            if (_WQ_Vars(Outflows[i].O2idx,idx_dep) <= O2crit) {  //get modelled O2 conc. via _WQ_Vars(var,lyr)
+            if ( CRITabove ? (ActVal >= crit_val) : (ActVal <= crit_val) ) {
                 if (checkjday < 0)
-                    checkjday = jday+O2critdays;
+                    checkjday = jday+crit_days;
                 DrawHeight = Outflows[i].Hcrit-Base;              //# withdraw at another fixed height (e.g. bottom outlet)
                 if (DrawHeight > Lake[surfLayer].Height)
                     DrawHeight = Lake[surfLayer].Height;
@@ -1396,7 +1398,7 @@ AED_REAL SpecialConditionDraw(int jday, int i)
             }
         }
         fprintf(sc_files[i],"%8d,%8d,%8d,%12.4lf,%12.4lf\n",
-                   jday,Outflows[i].Type,l_crit,DrawHeight,_WQ_Vars(Outflows[i].O2idx,idx_dep));
+                   jday,Outflows[i].Type,l_crit,DrawHeight,_WQ_Vars(Outflows[i].crit_idx,idx_dep));
 
     /**********************************************************************
      * Type 4 is variable outlet heights for ISOTHERM                     *
@@ -1424,9 +1426,13 @@ AED_REAL SpecialConditionDraw(int jday, int i)
 
         doit = FALSE;
         if (COUPLoxy) {
-            // with oxygen coupling
-            //fprintf(stderr,"Coupled O2idx %4d\n",Outflows[i].O2idx);
-            idx_dep = find_layer_by_height(O2critdep-Base);
+            // oxygen coupling — always checks OXY_oxy regardless of crit_varname
+            static int oxy_idx = -1;
+            if (oxy_idx < 0) {
+                size_t tl = strlen("OXY_oxy");
+                oxy_idx = wq_var_index_c("OXY_oxy", &tl);
+            }
+            idx_dep = find_layer_by_height(crit_dep-Base);
 
             if (jday < checkjday) {
                 DrawHeight = Outflows[i].Hcrit-Base;         //# withdraw at another fixed height (e.g. bottom outlet)
@@ -1434,12 +1440,13 @@ AED_REAL SpecialConditionDraw(int jday, int i)
                     DrawHeight = Lake[surfLayer].Height;
                 fprintf(sc_files[i],"%8d,%8d,%8d,%8d,%8d,%8d,%8d,%8d,%8d,%8d,%12.4lf,%12.4lf,%8d,%8d,%8d,%8d\n",
                               jday,Outflows[i].Type,1,999,999,999,999,999,999,999,DrawHeight,
-                              _WQ_Vars(Outflows[i].O2idx,idx_dep),999,999,999,999);
+                              (oxy_idx >= 0 ? _WQ_Vars(oxy_idx,idx_dep) : -1.),999,999,999,999);
             } else {
+                AED_REAL ActOxy = (oxy_idx >= 0) ? _WQ_Vars(oxy_idx,idx_dep) : 0.0;
                 checkjday = -1;
-                if (_WQ_Vars(Outflows[i].O2idx,idx_dep) <= O2crit) {  //get modelled O2 conc. via _WQ_Vars(var,lyr)
+                if (ActOxy <= crit_val) {  // oxygen coupling always checks below threshold
                     if (checkjday < 0)
-                        checkjday = jday+O2critdays;
+                        checkjday = jday+crit_days;
                     DrawHeight = Outflows[i].Hcrit-Base;               //# withdraw at another fixed height (e.g. bottom outlet)
                     if (DrawHeight > Lake[surfLayer].Height)
                         DrawHeight = Lake[surfLayer].Height;
@@ -1449,7 +1456,7 @@ AED_REAL SpecialConditionDraw(int jday, int i)
                     }
                     fprintf(sc_files[i],"%8d,%8d,%8d,%8d,%8d,%8d,%8d,%8d,%8d,%8d,%12.4lf,%12.4lf,%8d,%8d,%8d,%8d\n",
                                   jday,Outflows[i].Type,1,999,999,999,999,999,999,999,DrawHeight,
-                                  _WQ_Vars(Outflows[i].O2idx,idx_dep),999,999,999,999);
+                                  ActOxy,999,999,999,999);
                 } else
                     doit = TRUE;
             }

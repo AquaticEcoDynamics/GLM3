@@ -141,7 +141,7 @@ typedef char filname[80];
    typedef struct OutflowDataType {
        int      Type;            // outflow type
        AED_REAL Hcrit;           // outlet height when crit O2
-       int      O2idx;           // O2 parameter idx in AED/FABM
+       int      crit_idx;        // critical variable idx in AED/FABM
        AED_REAL TARGETtemp;      // Isotherm for withdrawal switch 4
        AED_REAL OLev;            // distance below surface level
        AED_REAL OLen;            // basin length at the outlet
@@ -228,6 +228,8 @@ typedef char filname[80];
        AED_REAL dailySeepage;    // Total Daily Seepage (m3/day)
        AED_REAL albedo;          // Daily surface albedo
        AED_REAL dailyzonL;       // Daily atmospheric stability
+       AED_REAL u_star;          // Wind friction velocity (m/s)
+       AED_REAL Q_net;           // Net non-penetrative heat flux (W/m2)
    } SurfaceDataType;
 
    /*===========================================================*/

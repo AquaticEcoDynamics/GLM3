@@ -77,9 +77,10 @@ InflowDataType Inflows[MaxInf];    //# Array of Inflows
 
 int NumOut = 0;                    //# Number of outflows
 OutflowDataType Outflows[MaxOut];  //# Array of Outflows
-int O2crit;
-int O2critdep;
-int O2critdays;
+AED_REAL crit_val;
+AED_REAL crit_dep;
+int crit_days;
+CLOGICAL CRITabove = FALSE;
 CLOGICAL MIXwithdraw = FALSE;
 CLOGICAL COUPLoxy = FALSE;
 AED_REAL WithdrawalTemp;

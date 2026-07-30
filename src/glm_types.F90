@@ -115,6 +115,10 @@ MODULE glm_types
       AED_REAL :: dailyRain        !# Daily Rain (m3/day)
       AED_REAL :: dailyRunoff      !# Daily Rain (m3/day)
       AED_REAL :: dailySnow        !# Daily Snow (m3/day)
+      AED_REAL :: Qsw              !# Shortwave radiation (W/m2)
+      AED_REAL :: Qe               !# Latent heat flux (W/m2)
+      AED_REAL :: Qh               !# Sensible heat flux (W/m2)
+      AED_REAL :: Qlw              !# Net longwave radiation (W/m2)
       AED_REAL :: dailyQsw         !# Daily Short Wave Radiation (J/day)
       AED_REAL :: dailyQe          !# Daily Latent Heat(J/day)
       AED_REAL :: dailyQh          !# Daily Sensible Heat (J/day)
@@ -125,6 +129,8 @@ MODULE glm_types
       AED_REAL :: dailySeepage     !# Total Daily Seepage (m3/day)
       AED_REAL :: albedo           !# Daily surface albedo
       AED_REAL :: dailyzonL        !# Average z/L value, daily atmospheric stability
+      AED_REAL :: u_star           !# Wind friction velocity (m/s)
+      AED_REAL :: Q_net            !# Net non-penetrative heat flux (W/m2)
    END TYPE SurfaceDataType
 
 !+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -253,6 +259,22 @@ MODULE glm_types
 
    TYPE(FLOGICAL),BIND(C, name="do_particle_bgc")    :: do_particle_bgc = .FALSE.
    TYPE(FLOGICAL),BIND(C, name="link_ext_par")       :: link_ext_par = .FALSE.
+
+   !# Dynamic sediment soil-temperature model (sed_heat_model = 2): the per-step
+   !# timestep (set from noSecs by glm_surface.c) and the soil thermal properties
+   !# (mirror intertidal-soil SoilParams; optional &sediment overrides).
+   !# Fortran owns these symbols; the C side extern's them (glm_globals.h).
+   TYPE(AED_REAL),TARGET,BIND(C, name="soil_dt")             :: soil_dt = 3600.
+   TYPE(AED_REAL),TARGET,BIND(C, name="sed_k_mineral")       :: sed_k_mineral = 2.5
+   TYPE(AED_REAL),TARGET,BIND(C, name="sed_k_water")         :: sed_k_water = 0.57
+   TYPE(AED_REAL),TARGET,BIND(C, name="sed_k_air")           :: sed_k_air = 0.025
+   TYPE(AED_REAL),TARGET,BIND(C, name="sed_c_mineral")       :: sed_c_mineral = 2.0e6
+   TYPE(AED_REAL),TARGET,BIND(C, name="sed_c_water")         :: sed_c_water = 4.18e6
+   TYPE(AED_REAL),TARGET,BIND(C, name="sed_c_air")           :: sed_c_air = 1.25e3
+   TYPE(AED_REAL),TARGET,BIND(C, name="sed_bulk_density")    :: sed_bulk_density = 1.5
+   TYPE(AED_REAL),TARGET,BIND(C, name="sed_mineral_density") :: sed_mineral_density = 2.6
+   TYPE(AED_REAL),TARGET,BIND(C, name="sed_porosity")        :: sed_porosity = -1.0
+   TYPE(AED_REAL),TARGET,BIND(C, name="sed_deep_temp")       :: sed_deep_temp = -9999.0
 
 CONTAINS
 

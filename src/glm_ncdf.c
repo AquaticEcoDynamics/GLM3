@@ -66,6 +66,8 @@ static int SnowDns_id, Alb_id, MaxT_id, MinT_id, SfT_id, DQsw_id, DQe_id;
 static int DQh_id, DQlw_id, Light_id, BenLight_id, SWH_id, SWL_id, SWP_id;
 static int Qsw_id, Qe_id, Qh_id, Qlw_id;
 static int LkNum_id, maxdtz_id, CD_id, CHE_id, zL_id;
+static int sedlayer_dim, sed_temp_id, sed_hf_id, sed_zt_id, sed_ld_id;
+static int zarea_id;
 
 #ifdef _WIN32
     char *strndup(const char *s, size_t len);
@@ -204,6 +206,12 @@ int init_glm_ncdf(const char *fn, const char *title, AED_REAL lat,
     check_nc_error(nc_def_var(ncid, "taub",    NC_REALTYPE, 4, dims, &Taub_id));
     check_nc_error(nc_def_var(ncid, "epsilon", NC_REALTYPE, 4, dims, &epsilon_id));
 
+    dims[3] = x_dim;
+    dims[2] = y_dim;
+    dims[1] = zone_dim;
+    dims[0] = time_dim;
+    check_nc_error(nc_def_var(ncid, "zarea", NC_REALTYPE, 4, dims, &zarea_id));
+
     /**************************************************************************
      * assign attributes                                                      *
      **************************************************************************/
@@ -283,6 +291,7 @@ int init_glm_ncdf(const char *fn, const char *title, AED_REAL lat,
 
     set_nc_attributes(ncid, Taub_id,    "N/m2",    "layer stress"     PARAM_FILLVALUE);
     set_nc_attributes(ncid, epsilon_id, "m2/s",    "diffusivity"      PARAM_FILLVALUE);
+    set_nc_attributes(ncid, zarea_id,   "m2",      "sediment zone area" PARAM_FILLVALUE);
 
     //# global attributes
     nc_put_att(ncid, NC_GLOBAL, "Title", NC_CHAR, strlen(title), title);
@@ -296,12 +305,44 @@ int init_glm_ncdf(const char *fn, const char *title, AED_REAL lat,
      * Save some static data                                                  *
      **************************************************************************/
 
+    /**************************************************************************
+     * sediment temperature model (sed_heat_model == 2)                       *
+     **************************************************************************/
+    if ( sed_heat_model == 2 && n_zones > 0 && theZones != NULL ) {
+        int nsl = theZones[0].n_sed_layers;
+        check_nc_error(nc_def_dim(ncid, "sed_layers", nsl, &sedlayer_dim));
+
+        dims[0] = time_dim; dims[1] = zone_dim; dims[2] = sedlayer_dim;
+        check_nc_error(nc_def_var(ncid, "sed_temp", NC_REALTYPE, 3, dims, &sed_temp_id));
+
+        dims[0] = time_dim; dims[1] = zone_dim;
+        check_nc_error(nc_def_var(ncid, "sed_heatflux", NC_REALTYPE, 2, dims, &sed_hf_id));
+        check_nc_error(nc_def_var(ncid, "zone_ztemp",   NC_REALTYPE, 2, dims, &sed_zt_id));
+
+        dims[0] = sedlayer_dim;
+        check_nc_error(nc_def_var(ncid, "sed_layer_depth", NC_REALTYPE, 1, dims, &sed_ld_id));
+
+        set_nc_attributes(ncid, sed_temp_id, "celsius", "sediment temperature"         PARAM_FILLVALUE);
+        set_nc_attributes(ncid, sed_hf_id,   "W/m2",    "sediment-water heat flux"      PARAM_FILLVALUE);
+        set_nc_attributes(ncid, sed_zt_id,   "celsius", "zone water temp (sed top BC)"  PARAM_FILLVALUE);
+        set_nc_attributes(ncid, sed_ld_id,   "meters",  "sediment node depth"           PARAM_FILLVALUE);
+    }
+
     //# leave define mode
     check_nc_error(nc_enddef(ncid));
 
     //# save latitude and longitude
     store_nc_scalar(ncid, lon_id, POINT, lon);
     store_nc_scalar(ncid, lat_id, POINT, lat);
+
+    //# save static sediment node depths
+    if ( sed_heat_model == 2 && n_zones > 0 && theZones != NULL ) {
+        int nsl = theZones[0].n_sed_layers, k;
+        AED_REAL *ld = malloc(nsl * sizeof(AED_REAL));
+        for (k = 0; k < nsl; k++) ld[k] = theZones[0].layers[k].depth;
+        check_nc_error(nc_put_var_double(ncid, sed_ld_id, ld));
+        free(ld);
+    }
 
     check_nc_error(nc_sync(ncid));
 
@@ -433,6 +474,33 @@ void write_glm_ncdf(int ncid, int wlev, int nlev, int stepnum, AED_REAL timestep
     free(temps);  free(dens); free(qsw);
     free(extc_coef); free(u_mean); free(u_orb);
     free(taub); free(epsilon);
+
+    /* sediment temperature model time series (sed_heat_model == 2) */
+    if ( sed_heat_model == 2 && n_zones > 0 && theZones != NULL ) {
+        int nsl = theZones[0].n_sed_layers, z, k;
+        AED_REAL *st = malloc(n_zones * nsl * sizeof(AED_REAL));
+        AED_REAL *hf = malloc(n_zones * sizeof(AED_REAL));
+        AED_REAL *zt = malloc(n_zones * sizeof(AED_REAL));
+        for (z = 0; z < n_zones; z++) {
+            hf[z] = theZones[z].heatflux;
+            zt[z] = theZones[z].ztemp;
+            for (k = 0; k < nsl; k++) st[z*nsl + k] = theZones[z].layers[k].temp;
+        }
+        start[0] = set_no; edges[0] = 1;
+        start[1] = 0;      edges[1] = n_zones;
+        start[2] = 0;      edges[2] = nsl;
+        check_nc_error(nc_put_vara(ncid, sed_temp_id, start, edges, st));
+        check_nc_error(nc_put_vara(ncid, sed_hf_id,   start, edges, hf));
+        check_nc_error(nc_put_vara(ncid, sed_zt_id,   start, edges, zt));
+        free(st); free(hf); free(zt);
+    }
+
+    if ( n_zones > 0 ) {
+        AED_REAL *zarea = malloc(n_zones * sizeof(AED_REAL));
+        for (i = 0; i < n_zones; i++) zarea[i] = theZones[i].zarea;
+        store_nc_array(ncid, zarea_id, XYNT_SHAPE, n_zones, n_zones, zarea);
+        free(zarea);
+    }
 
     check_nc_error(nc_sync(ncid));
 }

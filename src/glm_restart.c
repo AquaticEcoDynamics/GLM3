@@ -9,6 +9,7 @@
  *     MeanHeight, Vol1, Density, Epsilon, Umean, Uorb, LayerStress,          *
  *     ExtcCoefSW)                                                            *
  *   - WQ per-layer variables (WQ_Vars)                                       *
+ *   - WQ per-layer diagnostics (WQD_Vars) — cc_diag persists between steps   *
  *   - Surface state (AvgSurfTemp, delzBlueIce, delzWhiteIce, delzSnow,      *
  *     RhoSnow)                                                               *
  *   - Mixer state (DepMX, PrevThick, Energy_AvailableMix, OldSlope,         *
@@ -110,6 +111,7 @@ void write_glm_restart(const char *fn)
 
     /* -------- define dimensions -------- */
     int dim_nlev, dim_maxpar, dim_numinf, dim_wqvars, dim_wqben, dim_zones, dim_wqnamelen;
+    int dim_wqdvars;
     int dim_sedlayers = -1;
 
     RST_CHECK(nc_def_dim(ncid, "nlev",        MaxLayers,   &dim_nlev));
@@ -120,6 +122,11 @@ void write_glm_restart(const char *fn)
     RST_CHECK(nc_def_dim(ncid, "num_wq_vars", nwq,         &dim_wqvars));
     int nben = (wq_calc && Num_WQ_Ben > 0) ? Num_WQ_Ben : 1;
     RST_CHECK(nc_def_dim(ncid, "num_wq_ben",  nben,        &dim_wqben));
+    /* Pelagic diagnostics (WQD_Vars / cc_diag). cc_diag is not zeroed between
+     * timesteps (see glm_aed.F90), so zavg diagnostics such as ch4_ebb_dsfv
+     * carry state across steps and must be saved for a bit-for-bit restart. */
+    int nwqd = (wq_calc && Num_WQD_Vars > 0) ? Num_WQD_Vars : 1;
+    RST_CHECK(nc_def_dim(ncid, "num_wqd_vars", nwqd,       &dim_wqdvars));
     RST_CHECK(nc_def_dim(ncid, "n_zones",     n_zones > 0 ? n_zones : 1,
                          &dim_zones));
     RST_CHECK(nc_def_dim(ncid, "wq_name_len", WQ_NAME_LEN, &dim_wqnamelen));
@@ -153,6 +160,7 @@ void write_glm_restart(const char *fn)
     RST_CHECK(nc_put_att_int(ncid, NC_GLOBAL, "NumInf",          NC_INT, 1, &NumInf));
     RST_CHECK(nc_put_att_int(ncid, NC_GLOBAL, "Tot_WQ_Vars",     NC_INT, 1, &Tot_WQ_Vars));
     RST_CHECK(nc_put_att_int(ncid, NC_GLOBAL, "Num_WQ_Ben",      NC_INT, 1, &Num_WQ_Ben));
+    RST_CHECK(nc_put_att_int(ncid, NC_GLOBAL, "Num_WQD_Vars",    NC_INT, 1, &Num_WQD_Vars));
     RST_CHECK(nc_put_att_int(ncid, NC_GLOBAL, "n_zones",         NC_INT, 1, &n_zones));
     RST_CHECK(nc_put_att_int(ncid, NC_GLOBAL, "sed_heat_model",  NC_INT, 1, &sed_heat_model));
     RST_CHECK(nc_put_att_int(ncid, NC_GLOBAL, "n_sed_layers_rst",NC_INT, 1, &n_sed_layers_rst));
@@ -201,6 +209,16 @@ void write_glm_restart(const char *fn)
     int id_wqs = -1;
     if (wq_calc && Num_WQ_Ben > 0 && WQS_Vars != NULL) {
         def_var_d(ncid, "wqs_vars", 1, &dim_wqben, &id_wqs);
+    }
+
+    /* Pelagic WQ diagnostics [wqd_vars, nlev] (stored as flat [wqd_vars * nlev]).
+     * Benthic diagnostics (WQDS_Vars / cc_diag_hz) are zeroed every step and
+     * fully re-populated in-module, so they carry no cross-step state and are
+     * intentionally not saved. */
+    int id_wqd = -1;
+    if (wq_calc && Num_WQD_Vars > 0 && WQD_Vars != NULL) {
+        int dims2d[2] = { dim_wqdvars, dim_nlev };
+        def_var_d(ncid, "wqd_vars", 2, dims2d, &id_wqd);
     }
 
     /* WQ variable name strings [num_wq_vars, wq_name_len] and [num_wq_ben, wq_name_len] */
@@ -340,6 +358,18 @@ void write_glm_restart(const char *fn)
     /* Benthic WQ sheet */
     if (id_wqs >= 0)
         RST_CHECK(nc_put_var_double(ncid, id_wqs, WQS_Vars));
+
+    /* Pelagic WQ diagnostics: [Num_WQD_Vars * MaxLayers] (all slots, active +
+     * unused), mirroring the wq_vars layout above. */
+    if (id_wqd >= 0) {
+        AED_REAL *wqdbuf = malloc(Num_WQD_Vars * MaxLayers * sizeof(AED_REAL));
+        if (!wqdbuf) { fprintf(stderr, "glm_restart: out of memory\n"); exit(1); }
+        for (int v = 0; v < Num_WQD_Vars; v++)
+            for (int l = 0; l < MaxLayers; l++)
+                wqdbuf[v * MaxLayers + l] = _WQD_Vars(v, l);
+        RST_CHECK(nc_put_var_double(ncid, id_wqd, wqdbuf));
+        free(wqdbuf);
+    }
 
     /* WQ variable name strings */
     if ((id_wqnames >= 0 || id_wqbennames >= 0) && p_wq_get_var_names != NULL) {
@@ -518,13 +548,14 @@ int read_glm_restart(const char *fn)
     rst_ncid_ = ncid;
 
     /* ---- validate global attributes ---- */
-    int att_nlev, att_maxlayers, att_numinf, att_tot_wq, att_nben, att_nzones;
+    int att_nlev, att_maxlayers, att_numinf, att_tot_wq, att_nben, att_nwqd, att_nzones;
     int att_sed_heat_model, att_n_sed_layers_rst;
     RST_CHECK(nc_get_att_int(ncid, NC_GLOBAL, "NumLayers",      &att_nlev));
     RST_CHECK(nc_get_att_int(ncid, NC_GLOBAL, "MaxLayers",      &att_maxlayers));
     RST_CHECK(nc_get_att_int(ncid, NC_GLOBAL, "NumInf",         &att_numinf));
     RST_CHECK(nc_get_att_int(ncid, NC_GLOBAL, "Tot_WQ_Vars",    &att_tot_wq));
     RST_CHECK(nc_get_att_int(ncid, NC_GLOBAL, "Num_WQ_Ben",     &att_nben));
+    RST_CHECK(nc_get_att_int(ncid, NC_GLOBAL, "Num_WQD_Vars",   &att_nwqd));
     RST_CHECK(nc_get_att_int(ncid, NC_GLOBAL, "n_zones",        &att_nzones));
     RST_CHECK(nc_get_att_int(ncid, NC_GLOBAL, "sed_heat_model", &att_sed_heat_model));
     RST_CHECK(nc_get_att_int(ncid, NC_GLOBAL, "n_sed_layers_rst", &att_n_sed_layers_rst));
@@ -552,6 +583,11 @@ int read_glm_restart(const char *fn)
     if (att_nben != Num_WQ_Ben) {
         fprintf(stderr, "glm_restart: restart Num_WQ_Ben (%d) != current (%d)\n",
                 att_nben, Num_WQ_Ben);
+        exit(1);
+    }
+    if (att_nwqd != Num_WQD_Vars) {
+        fprintf(stderr, "glm_restart: restart Num_WQD_Vars (%d) != current (%d)\n",
+                att_nwqd, Num_WQD_Vars);
         exit(1);
     }
 
@@ -629,6 +665,22 @@ int read_glm_restart(const char *fn)
             fprintf(stderr, "     WARNING: restart has no wqs_vars variable; "
                     "benthic WQ state initialised from NML.\n");
         }
+    }
+
+    /* ---- Pelagic WQ diagnostics (all MaxLayers slots) ----
+     * Required for bit-for-bit restart: cc_diag persists between timesteps
+     * (see glm_aed.F90). Num_WQD_Vars is validated above, so wqd_vars must be
+     * present. */
+    if (wq_calc && Num_WQD_Vars > 0 && WQD_Vars != NULL) {
+        int id_wqd;
+        RST_CHECK(nc_inq_varid(ncid, "wqd_vars", &id_wqd));
+        AED_REAL *wqdbuf = malloc(Num_WQD_Vars * att_maxlayers * sizeof(AED_REAL));
+        if (!wqdbuf) { fprintf(stderr, "glm_restart: out of memory\n"); exit(1); }
+        RST_CHECK(nc_get_var_double(ncid, id_wqd, wqdbuf));
+        for (int v = 0; v < Num_WQD_Vars; v++)
+            for (int l = 0; l < att_maxlayers; l++)
+                _WQD_Vars(v, l) = wqdbuf[v * att_maxlayers + l];
+        free(wqdbuf);
     }
 
     /* ---- Surface scalars ---- */

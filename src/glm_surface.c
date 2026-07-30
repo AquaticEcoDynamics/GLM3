@@ -948,6 +948,7 @@ void do_surface_thermodynamics(int jday, int iclock, int LWModel,
        SurfData.Qe = Q_latentheat;
        SurfData.Qh = Q_sensibleheat;
        SurfData.Qlw = Q_longwave;
+       SurfData.Q_net = Q_latentheat + Q_sensibleheat + Q_longwave;
     }
 
     /***************************************************************************
@@ -1138,11 +1139,28 @@ void do_surface_thermodynamics(int jday, int iclock, int LWModel,
             }
             //# Now compute layer-specifc sed heating and increment temperature
             if ( sed_heat_model == 2 ){
+              soil_dt = noSecs;   /* per-step timestep for the dynamic soil solver (s) */
 //            memset(sed_depths, 0, sizeof(AED_REAL)*sed_layers);
 //            memset(sed_vwc, 0, sizeof(AED_REAL)*sed_layers);
 //            memset(sed_temps, 0, sizeof(AED_REAL)*sed_layers);
 
-              for (z = 1; z < n_zones; z++) {
+              //# Volume-weighted zone-average water temperature: the soil model's
+              //# surface boundary condition.  Computed here rather than in the WQ
+              //# coupler because only the legacy 'aed' coupler's copy_to_zone fills
+              //# ztemp; the 'api' coupler and wq_calc=.false. runs would leave it 0.
+              //# Zones with no wet layers keep their previous ztemp.
+              for (z = 0; z < n_zones; z++) {
+                  AED_REAL tsum = 0., tvol = 0.;
+                  for (i = botmLayer; i <= surfLayer; i++) {
+                      if (layer_zone[i] == z) {
+                          tsum += Lake[i].Temp * Lake[i].LayerVol;
+                          tvol += Lake[i].LayerVol;
+                      }
+                  }
+                  if (tvol > 0.) theZones[z].ztemp = tsum / tvol;
+              }
+
+              for (z = 0; z < n_zones; z++) {
                   // call the dynamic soil/sediment temperature model
                   /*
                   SoilTemp( &theZones[z].n_sed_layers,
@@ -1156,7 +1174,7 @@ void do_surface_thermodynamics(int jday, int iclock, int LWModel,
                   // ZSoilTemp advances this zone's sediment temperature profile
                   // and stores the sediment-water interface heat flux (W/m2) in
                   // theZones[z].heatflux.
-                  ZSoilTemp(&theZones[z]);
+                  if ( p_wq_ZSoilTemp != NULL ) ZSoilTemp(&theZones[z]);
 #endif
                   // flux heat from the soil into the water, if the layer is over z
                   for (i = botmLayer+1; i <= surfLayer; i++) {

@@ -103,6 +103,9 @@ MODULE glm_api_aed
 !  AED_REAL,DIMENSION(:),  ALLOCATABLE,TARGET :: cc_hz !# water quality array - benthic: nvars
    AED_REAL,DIMENSION(:),  POINTER :: cc_hz !# water quality array - benthic: nvars
    AED_REAL,DIMENSION(:,:),ALLOCATABLE,TARGET :: cc_diag
+   AED_REAL,DIMENSION(:,:),ALLOCATABLE        :: cc_diag_old
+   AED_REAL,DIMENSION(:),  ALLOCATABLE        :: z_prev
+   AED_REAL,DIMENSION(:),  ALLOCATABLE        :: area_prev
    AED_REAL,DIMENSION(:),  ALLOCATABLE,TARGET :: cc_diag_hz
 
    LOGICAL,TARGET :: actv = .TRUE.
@@ -114,6 +117,7 @@ MODULE glm_api_aed
 
    !# Arrays for environmental variables not supplied externally.
    AED_REAL,DIMENSION(:),ALLOCATABLE,TARGET :: depth
+   AED_REAL,DIMENSION(:),ALLOCATABLE,TARGET :: layer_area  ! incremental area per layer (area(i)-area(i-1))
 
    AED_REAL,DIMENSION(:),ALLOCATABLE,TARGET :: pres
    AED_REAL,DIMENSION(:),ALLOCATABLE,TARGET :: par
@@ -147,6 +151,10 @@ MODULE glm_api_aed
    AED_REAL,POINTER :: longwave
    AED_REAL,POINTER :: wind
    AED_REAL,POINTER :: air_pres
+   AED_REAL,POINTER :: u_star_api
+   AED_REAL,POINTER :: Q_net_api
+   AED_REAL,POINTER :: delzBlueIce_api
+   AED_REAL,POINTER :: delzWhiteIce_api
 
    AED_REAL,DIMENSION(:),ALLOCATABLE,TARGET :: feedback
 
@@ -256,9 +264,13 @@ SUBROUTINE api_set_glm_env()
    humidity => MetData%RelHum
    wind     => MetData%WindSpeed
    rain     => MetData%Rain
-   evap     => SurfData%Evap
-   I_0      => MetData%ShortWave
-   longwave => MetData%LongWave
+   evap             => SurfData%Evap
+   I_0              => MetData%ShortWave
+   longwave         => MetData%LongWave
+   u_star_api       => SurfData%u_star
+   Q_net_api        => SurfData%Q_net
+   delzBlueIce_api  => SurfData%delzBlueIce
+   delzWhiteIce_api => SurfData%delzWhiteIce
 
    !# Set pointers to GLMs dynamic variables that will be updated later (in do_glm_wq)
    lheights => theLake%Height
@@ -278,6 +290,10 @@ SUBROUTINE api_set_glm_env()
    ALLOCATE(depth(MaxLayers),stat=status)
    IF (status /= 0) STOP 'allocate_memory(): Error allocating (depth)'
    depth = one_
+
+   ALLOCATE(layer_area(MaxLayers),stat=status)
+   IF (status /= 0) STOP 'allocate_memory(): Error allocating (layer_area)'
+   layer_area = zero_
 
    ALLOCATE(dz(MaxLayers),stat=status)
    IF (status /= 0) STOP 'allocate_memory(): Error allocating (dz)'
@@ -345,7 +361,7 @@ SUBROUTINE api_set_glm_env()
    env(1)%col_area      => col_area
    env(1)%height        => lheights
    env(1)%depth         => depth
-   env(1)%area          => area
+   env(1)%area          => layer_area   ! incremental area; cumulative theLake%LayerArea still available via 'area'
    env(1)%dz            => dz
 
    env(1)%temp          => temp
@@ -368,6 +384,10 @@ SUBROUTINE api_set_glm_env()
    env(1)%ss4           =>  tss !ss4
 
    env(1)%ustar_bed     => feedback !ustar_bed
+   env(1)%u_star        => u_star_api
+   env(1)%Q_net         => Q_net_api
+   env(1)%delzBlueIce   => delzBlueIce_api
+   env(1)%delzWhiteIce  => delzWhiteIce_api
    env(1)%wv_uorb       => feedback !wv_uorb
    env(1)%wv_t          => feedback !wv_t
    env(1)%layer_stress  => layer_stress(1)
@@ -424,6 +444,15 @@ SUBROUTINE api_set_glm_data()                     BIND(C, name=_WQ_SET_GLM_DATA)
    ALLOCATE(cc_diag(n_vars_diag, MaxLayers),stat=status)
    IF (status /= 0) STOP 'allocate_memory(): Error allocating (cc_diag)'
    cc_diag = zero_
+   ALLOCATE(cc_diag_old(n_vars_diag, MaxLayers),stat=status)
+   IF (status /= 0) STOP 'allocate_memory(): Error allocating (cc_diag_old)'
+   cc_diag_old = zero_
+   ALLOCATE(z_prev(MaxLayers),stat=status)
+   IF (status /= 0) STOP 'allocate_memory(): Error allocating (z_prev)'
+   z_prev = zero_
+   ALLOCATE(area_prev(MaxLayers),stat=status)
+   IF (status /= 0) STOP 'allocate_memory(): Error allocating (area_prev)'
+   area_prev = zero_
 
    !# Allocate diagnostic variable array and set all values to zero.
    !# (needed because time-integrated/averaged variables will increment rather than set the array)
@@ -556,8 +585,12 @@ SUBROUTINE api_do_glm(wlev)                             BIND(C, name=_WQ_DO_GLM)
 !
 !LOCALS
    LOGICAL :: doSurface
-   INTEGER :: lev, zon
-   AED_REAL :: surf, pa
+   INTEGER :: lev, zon, j, k, j_d
+   INTEGER, SAVE :: wlev_prev = 0
+   AED_REAL :: surf, pa, ratio
+   AED_REAL :: I_old, I_new
+   TYPE(aed_variable_t),POINTER :: tv
+   LOGICAL :: grid_changed
 !
 !-------------------------------------------------------------------------------
 !BEGIN
@@ -570,9 +603,11 @@ SUBROUTINE api_do_glm(wlev)                             BIND(C, name=_WQ_DO_GLM)
    !# re-compute the layer heights and depths
    dz(1) = lheights(1)
    depth(1) = surf - lheights(1)
+   layer_area(1) = area(1)
    DO lev=2,wlev
       dz(lev) = lheights(lev) - lheights(lev-1)
       depth(lev) = surf - lheights(lev)
+      layer_area(lev) = area(lev) - area(lev-1)   ! incremental area: cumulative gained at this layer
    ENDDO
 
    !# Calculate local pressure
@@ -591,8 +626,102 @@ SUBROUTINE api_do_glm(wlev)                             BIND(C, name=_WQ_DO_GLM)
       ENDDO
    ENDIF
 
+   !# Reset benthic sheet diagnostics each timestep — api_copy_from_zone accumulates into cc_diag_hz
+   cc_diag_hz = 0.
+
+   !# Remap the PERSISTED (rezero=.FALSE.) zavg diagnostics onto the current
+   !# layer grid. The host zeroes the layer-indexed cc_diag during between-step
+   !# layer restructuring (whenever the grid changes), so the value visible at the
+   !# top of this routine is unreliable. cc_diag_old, snapshotted at the END of the
+   !# previous step (see bottom of routine) on the previous grid, holds the true
+   !# post-benthic value and is the remap source. This lets the bubble module read
+   !# the previous step's ebullition, correctly remapped to the current layers.
+   grid_changed = ( wlev /= wlev_prev )
+   IF ( .NOT. grid_changed .AND. wlev_prev > 0 ) grid_changed = ANY( lheights(1:wlev) /= z_prev(1:wlev) )
+   IF ( grid_changed .AND. wlev_prev > 0 ) THEN
+      !# Grid changed: interpolate cc_diag_old (previous grid) onto the new grid.
+      j_d = 0
+      DO k = 1, n_aed_vars
+         IF ( aed_get_var(k, tv) ) THEN
+            IF ( tv%var_type == V_DIAGNOSTIC .AND. .NOT. tv%sheet ) THEN
+               j_d = j_d + 1
+               IF ( tv%zavg ) THEN
+                  DO lev = 1, wlev
+                     IF     (lheights(lev) <= z_prev(1))         THEN
+                        cc_diag(j_d, lev) = cc_diag_old(j_d, 1)          ! at/below old bottom
+                     ELSEIF (lheights(lev) >= z_prev(wlev_prev)) THEN
+                        cc_diag(j_d, lev) = cc_diag_old(j_d, wlev_prev)  ! at/above old top (covers growth)
+                     ELSE
+                        j = 1
+                        DO
+                           IF (lheights(lev) >= z_prev(j) .AND. lheights(lev) <= z_prev(j+1)) THEN
+                              ratio = (lheights(lev) - z_prev(j)) / (z_prev(j+1) - z_prev(j))
+                              cc_diag(j_d, lev) = (1.0-ratio)*cc_diag_old(j_d, j) + ratio*cc_diag_old(j_d, j+1)
+                              EXIT
+                           ELSEIF (j < wlev_prev - 1) THEN
+                              j = j + 1
+                           ELSE
+                              cc_diag(j_d, lev) = cc_diag_old(j_d, wlev_prev)
+                              EXIT
+                           ENDIF
+                        ENDDO
+                     ENDIF
+                  ENDDO
+
+                  !# Conserve the area-integral for persisted zavg flux diags
+                  !# (e.g. ch4_ebb_dsfv, mmol/m2/s). Pointwise height interpolation
+                  !# preserves the per-area shape but not Sum(diag*dArea) -- the
+                  !# total the bubble module integrates -- so rescale to the
+                  !# previous step's total. (rezero=.TRUE. diags are wiped in
+                  !# aed_run_model, so only persisted ones reach a reader.)
+                  IF ( .NOT. tv%rezero ) THEN
+                     I_old = zero_
+                     DO lev = 1, wlev_prev
+                        IF (lev == 1) THEN
+                           I_old = I_old + cc_diag_old(j_d,lev)*area_prev(lev)
+                        ELSE
+                           I_old = I_old + cc_diag_old(j_d,lev)*(area_prev(lev)-area_prev(lev-1))
+                        ENDIF
+                     ENDDO
+                     I_new = zero_
+                     DO lev = 1, wlev
+                        IF (lev == 1) THEN
+                           I_new = I_new + cc_diag(j_d,lev)*area(lev)
+                        ELSE
+                           I_new = I_new + cc_diag(j_d,lev)*(area(lev)-area(lev-1))
+                        ENDIF
+                     ENDDO
+                     IF (I_new > 1.0e-30) cc_diag(j_d,:) = cc_diag(j_d,:) * (I_old/I_new)
+                  ENDIF
+               ENDIF
+            ENDIF
+         ENDIF
+      ENDDO
+   ELSEIF ( wlev_prev > 0 ) THEN
+      !# Grid unchanged: restore persisted zavg diags from the snapshot (exact).
+      j_d = 0
+      DO k = 1, n_aed_vars
+         IF ( aed_get_var(k, tv) ) THEN
+            IF ( tv%var_type == V_DIAGNOSTIC .AND. .NOT. tv%sheet ) THEN
+               j_d = j_d + 1
+               IF ( tv%zavg .AND. .NOT. tv%rezero ) cc_diag(j_d,1:wlev) = cc_diag_old(j_d,1:wlev)
+            ENDIF
+         ENDIF
+      ENDDO
+   ENDIF
+
    doSurface = .NOT. ice
    CALL aed_run_model(1, wlev, doSurface)
+
+   !# Save layer count, heights and cumulative areas for interpolation on next timestep
+   wlev_prev = wlev
+   z_prev(1:wlev) = lheights(1:wlev)
+   area_prev(1:wlev) = area(1:wlev)
+
+   !# Snapshot the persisted zavg diag AFTER the benthic update, before the host
+   !# can zero it during layer restructuring. This is the remap source next step.
+   cc_diag_old = cc_diag
+
 END SUBROUTINE api_do_glm
 !+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
@@ -609,6 +738,8 @@ SUBROUTINE api_clean_glm()                           BIND(C, name=_WQ_CLEAN_GLM)
 !   IF (ASSOCIATED(cc_hz))     NULLIFY(cc_hz)
 !   IF (ALLOCATED(cc_diag))    DEALLOCATE(cc_diag)
 !   IF (ALLOCATED(cc_diag_hz)) DEALLOCATE(cc_diag_hz)
+   IF (ALLOCATED(cc_diag_old)) DEALLOCATE(cc_diag_old)
+   IF (ALLOCATED(z_prev))      DEALLOCATE(z_prev)
    IF (ALLOCATED(par))        DEALLOCATE(par)
    IF (ALLOCATED(nir))        DEALLOCATE(nir)
    IF (ALLOCATED(uva))        DEALLOCATE(uva)
@@ -617,6 +748,7 @@ SUBROUTINE api_clean_glm()                           BIND(C, name=_WQ_CLEAN_GLM)
    IF (ALLOCATED(dz))         DEALLOCATE(dz)
    IF (ALLOCATED(tss))        DEALLOCATE(tss)
    IF (ALLOCATED(depth))      DEALLOCATE(depth)
+   IF (ALLOCATED(layer_area)) DEALLOCATE(layer_area)
    IF (ASSOCIATED(sed_zones)) DEALLOCATE(sed_zones)
    IF (ALLOCATED(feedback))   DEALLOCATE(feedback)
    IF (ALLOCATED(externalid)) DEALLOCATE(externalid)

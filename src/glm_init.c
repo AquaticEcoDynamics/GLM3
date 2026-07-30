@@ -377,12 +377,13 @@ void init_glm(int *jstart, char *outp_dir, char *outp_fn, int *nsave)
     int             num_outlet     = 0;
     CLOGICAL       *flt_off_sw     = NULL;
     int            *outlet_type    = NULL;
-    int             crit_O2        = -1;
-    int             crit_O2_dep    = -1;
-    int             crit_O2_days   = -1;
+    AED_REAL        crit_val_in    = -1.0;
+    AED_REAL        crit_dep_in    = -1.0;
+    int             crit_days_in   = -1;
+    LOGICAL         crit_above_in  = FALSE;
     AED_REAL       *outlet_crit    = NULL;
-    char          **O2name         = NULL;
-    int             O2idx          = 0;
+    char          **crit_varname   = NULL;
+    int             crit_idx_in    = 0;
     AED_REAL       *target_temp    = NULL;
     AED_REAL        min_lake_temp  = 0.0;
     CLOGICAL        mix_withdraw   = FALSE;
@@ -408,12 +409,13 @@ void init_glm(int *jstart, char *outp_dir, char *outp_fn, int *nsave)
           { "outflow",           TYPE_START,            NULL                  },
           { "num_outlet",        TYPE_INT,              &num_outlet           },
           { "outlet_type",       TYPE_INT|MASK_LIST,    &outlet_type          },
-          { "crit_O2",           TYPE_INT,              &crit_O2              },
-          { "crit_O2_dep",       TYPE_INT,              &crit_O2_dep          },
-          { "crit_O2_days",      TYPE_INT,              &crit_O2_days         },
+          { "crit_val",          TYPE_DOUBLE,           &crit_val_in          },
+          { "crit_dep",          TYPE_DOUBLE,           &crit_dep_in          },
+          { "crit_days",         TYPE_INT,              &crit_days_in         },
+          { "crit_above",        TYPE_BOOL,             &crit_above_in        },
           { "outlet_crit",       TYPE_DOUBLE|MASK_LIST, &outlet_crit          },
-          { "O2name",            TYPE_STR|MASK_LIST,    &O2name               },
-          { "O2idx",             TYPE_INT,              &O2idx                },
+          { "crit_varname",      TYPE_STR|MASK_LIST,    &crit_varname         },
+          { "crit_idx",          TYPE_INT,              &crit_idx_in          },
           { "target_temp",       TYPE_DOUBLE|MASK_LIST, &target_temp          },
           { "min_lake_temp",     TYPE_DOUBLE,           &min_lake_temp        },
           { "fac_range_upper",   TYPE_DOUBLE,           &fac_range_upper      },
@@ -546,42 +548,68 @@ void init_glm(int *jstart, char *outp_dir, char *outp_fn, int *nsave)
     /*-- %%END NAMELIST ------------------------------------------------------*/
 
     /*-- %%NAMELIST sediment -------------------------------------------------*/
-//  extern int       benthic_mode;
-//  int              n_zones;
+    //# --- role 1: zone geometry / properties (benthic_mode & n_zones are globals) ---
     AED_REAL        *zone_heights = NULL;
-    extern CLOGICAL  sed_heat_sw;
-    extern int       sed_heat_model;
-    extern AED_REAL  sed_heat_Ksoil;
-    extern AED_REAL  sed_temp_depth;
-    extern AED_REAL *sed_temp_mean;
-    extern AED_REAL *sed_temp_amplitude;
-    extern AED_REAL *sed_temp_peak_doy;
     extern AED_REAL *sed_reflectivity;
     extern AED_REAL *sed_roughness;
-//  extern AED_REAL *sed_temp_amplitude;
-//  extern AED_REAL *sed_temp_peak_doy;
+    //# --- role 2: sediment temperature model ---
+    extern CLOGICAL  sed_heat_sw;        // auto-enabled when &sediment is present (not a key)
+    extern int       sed_heat_model;
+    //#   static model (sed_heat_model = 1): annual sinusoid
+    extern AED_REAL *sed_temp_mean;      // annual mean (also = deep-soil temp for model 2)
+    extern AED_REAL *sed_temp_amplitude;
+    extern AED_REAL *sed_temp_peak_doy;
+    extern AED_REAL  sed_heat_Ksoil;
+    extern AED_REAL  sed_temp_depth;     // model 1: depth-scale ZSED; model 2: soil-column depth
+    //#   dynamic soil model (sed_heat_model = 2): layered conduction
     extern int       n_sed_layers;
     extern AED_REAL *sed_layer_depth;
     extern AED_REAL *sed_vwc;
     extern AED_REAL  sed_spinup_days;
+    //#   dynamic soil-model thermal properties (optional; Fortran-owned globals)
+    extern AED_REAL  soil_dt;
+    extern AED_REAL  sed_k_mineral, sed_k_water, sed_k_air;
+    extern AED_REAL  sed_c_mineral, sed_c_water, sed_c_air;
+    extern AED_REAL  sed_bulk_density, sed_mineral_density, sed_porosity, sed_deep_temp;
     //==========================================================================
     NAMELIST sediment[] = {
           { "sediment",          TYPE_START,            NULL                  },
+
+          //# zone geometry / properties
           { "benthic_mode",      TYPE_INT,              &benthic_mode         },
           { "n_zones",           TYPE_INT,              &n_zones              },
           { "zone_heights",      TYPE_DOUBLE|MASK_LIST, &zone_heights         },
           { "sed_reflectivity",  TYPE_DOUBLE|MASK_LIST, &sed_reflectivity     },
           { "sed_roughness",     TYPE_DOUBLE|MASK_LIST, &sed_roughness        },
+
+          //# sediment temperature model:  1 = static (annual sinusoid),  2 = dynamic (soil column)
+          { "sed_heat_model",    TYPE_INT,              &sed_heat_model       },
+
+          //#   static model (sed_heat_model = 1)
           { "sed_temp_mean",     TYPE_DOUBLE|MASK_LIST, &sed_temp_mean        },
           { "sed_temp_amplitude",TYPE_DOUBLE|MASK_LIST, &sed_temp_amplitude   },
           { "sed_temp_peak_doy", TYPE_DOUBLE|MASK_LIST, &sed_temp_peak_doy    },
           { "sed_heat_Ksoil",    TYPE_DOUBLE,           &sed_heat_Ksoil       },
           { "sed_temp_depth",    TYPE_DOUBLE,           &sed_temp_depth       },
-          { "sed_heat_model",    TYPE_INT,              &sed_heat_model       },
+
+          //#   dynamic soil model (sed_heat_model = 2)
+          //#     sed_temp_mean (above) = deep-soil temp;  sed_temp_depth (above) = soil-column depth
+          //#     sed_layer_depth is OPTIONAL: omit it to auto-build the grid from n_sed_layers + sed_temp_depth
           { "n_sed_layers",      TYPE_INT,              &n_sed_layers         },
           { "sed_layer_depth",   TYPE_DOUBLE|MASK_LIST, &sed_layer_depth      },
           { "sed_vwc",           TYPE_DOUBLE|MASK_LIST, &sed_vwc              },
           { "sed_spinup_days",   TYPE_DOUBLE,           &sed_spinup_days      },
+          //#     soil thermal properties (optional; defaults mirror intertidal-soil)
+          { "sed_k_mineral",     TYPE_DOUBLE,           &sed_k_mineral        },
+          { "sed_k_water",       TYPE_DOUBLE,           &sed_k_water          },
+          { "sed_k_air",         TYPE_DOUBLE,           &sed_k_air            },
+          { "sed_c_mineral",     TYPE_DOUBLE,           &sed_c_mineral        },
+          { "sed_c_water",       TYPE_DOUBLE,           &sed_c_water          },
+          { "sed_c_air",         TYPE_DOUBLE,           &sed_c_air            },
+          { "sed_bulk_density",  TYPE_DOUBLE,           &sed_bulk_density     },
+          { "sed_mineral_density",TYPE_DOUBLE,          &sed_mineral_density  },
+          { "sed_porosity",      TYPE_DOUBLE,           &sed_porosity         },
+          { "sed_deep_temp",     TYPE_DOUBLE,           &sed_deep_temp        },
           { NULL,                TYPE_END,              NULL                  }
     };
     /*-- %%END NAMELIST ------------------------------------------------------*/
@@ -691,6 +719,42 @@ void init_glm(int *jstart, char *outp_dir, char *outp_fn, int *nsave)
           { "oxy_recirc_add",             TYPE_DOUBLE,       &oxy_recirc_add             },
           { "time_fmt",                   TYPE_STR,          &timefmt_oxy               },
           { NULL,                         TYPE_END,          NULL                       }
+    };
+    /*-- %%END NAMELIST ------------------------------------------------------*/
+
+    /*-- %%NAMELIST bubbler --------------------------------------------------*/
+    extern LOGICAL         bubbler_on;
+    extern char           *bubbler_data_file;
+    extern AED_REAL        bubbler_aflow;
+    extern int             bubbler_nports;
+    extern AED_REAL        bubbler_bublen;
+    extern AED_REAL        bubbler_bdepth;
+    extern LOGICAL         bubbler_opopt;
+    extern AED_REAL        bubbler_ton;
+    extern AED_REAL        bubbler_toff;
+    extern LOGICAL         bubbler_intopt;
+    extern char           *bubbler_start;
+    extern char           *bubbler_stop;
+    extern LOGICAL         bubbler_eff;
+    extern char           *bubbler_eff_file;
+    //==========================================================================
+    NAMELIST bubbler[] = {
+          { "bubbler",           TYPE_START,            NULL                  },
+          { "on",                TYPE_BOOL,             &bubbler_on           },
+          { "data_file",         TYPE_STR,              &bubbler_data_file    },
+          { "aflow",             TYPE_DOUBLE,           &bubbler_aflow        },
+          { "nports",            TYPE_INT,              &bubbler_nports       },
+          { "bublen",            TYPE_DOUBLE,           &bubbler_bublen       },
+          { "bdepth",            TYPE_DOUBLE,           &bubbler_bdepth       },
+          { "opopt",             TYPE_BOOL,             &bubbler_opopt        },
+          { "ton",               TYPE_DOUBLE,           &bubbler_ton          },
+          { "toff",              TYPE_DOUBLE,           &bubbler_toff         },
+          { "intopt",            TYPE_BOOL,             &bubbler_intopt       },
+          { "start",             TYPE_STR,              &bubbler_start        },
+          { "stop",              TYPE_STR,              &bubbler_stop         },
+          { "eff",               TYPE_BOOL,             &bubbler_eff          },
+          { "eff_file",          TYPE_STR,              &bubbler_eff_file     },
+          { NULL,                TYPE_END,              NULL                  }
     };
     /*-- %%END NAMELIST ------------------------------------------------------*/
 
@@ -1083,15 +1147,59 @@ void init_glm(int *jstart, char *outp_dir, char *outp_fn, int *nsave)
      * integrates the N-2 interior nodes (see zZSoilTemp).                    *
      **************************************************************************/
     if ( sed_heat_model == 2 ) {
+        if ( ! wq_calc ) {
+            fprintf(stderr, "     ERROR: sed_heat_model = 2 requires an active WQ module (aed/api);\n");
+            fprintf(stderr, "            the dynamic soil-temperature solver (zZSoilTemp) is provided by the WQ library.\n");
+            exit(1);
+        }
         if ( n_zones <= 0 || theZones == NULL ) {
             fprintf(stderr, "     ERROR: sed_heat_model = 2 requires sediment zones (benthic_mode = 2)\n");
             exit(1);
         }
-        if ( n_sed_layers < 3 || sed_layer_depth == NULL ) {
-            fprintf(stderr, "     ERROR: sed_heat_model = 2 requires n_sed_layers >= 3 and a sed_layer_depth list\n");
+        if ( n_sed_layers < 3 ) {
+            fprintf(stderr, "     ERROR: sed_heat_model = 2 requires n_sed_layers >= 3\n");
             exit(1);
         }
-        if ( get_nml_listlen(namlst, "sediment", "sed_layer_depth") < n_sed_layers ) {
+        /* The node grid is set either by an explicit sed_layer_depth list, or
+         * (if none is given) built geometrically over [0, sed_temp_depth] -- so
+         * the soil-column depth is controlled by sed_temp_depth.  sed_temp_depth
+         * is shared with the static model, where it is the conductive depth-
+         * scale ZSED.  NOTE: placeholder geometric grid; #4 will align it with
+         * the Python intertidal-soil grid generator. */
+        if ( sed_layer_depth == NULL ) {
+            if ( sed_temp_depth <= 0.0 ) {
+                fprintf(stderr, "     ERROR: sed_heat_model = 2 needs either a sed_layer_depth list "
+                                "or sed_temp_depth > 0 (the soil-column depth)\n");
+                exit(1);
+            }
+            sed_layer_depth = malloc(n_sed_layers * sizeof(AED_REAL));
+            /* Match the Python intertidal-soil grid (intertidal_soil/soil_params.py
+             * _default_layer_depths): fixed dz0 = 5 mm surface cell, growth ratio
+             * solved by bisection so the n interior cells span [0.001, sed_temp_depth];
+             * n_sed_layers = n + 2 total nodes (0 = surface, n+1 = deep boundary). */
+            {
+                int      n   = n_sed_layers - 2;          /* Python n (interior cells) */
+                AED_REAL dz0 = 0.005, target = sed_temp_depth - 0.001;
+                if ( target <= dz0 * n ) {                /* too shallow: uniform grid */
+                    for (k = 0; k < n_sed_layers; k++)
+                        sed_layer_depth[k] = sed_temp_depth * k / (double)(n_sed_layers - 1);
+                } else {
+                    AED_REAL lo = 1.0 + 1e-9, hi = 10.0, r = 1.5;
+                    int it;
+                    for (it = 0; it < 100; it++) {        /* solve dz0*(r^n-1)/(r-1) = target */
+                        r = 0.5 * (lo + hi);
+                        if ( dz0 * (pow(r, n) - 1.0) / (r - 1.0) > target ) hi = r; else lo = r;
+                    }
+                    sed_layer_depth[0] = 0.0;
+                    sed_layer_depth[1] = 0.001;
+                    for (k = 1; k <= n; k++)
+                        sed_layer_depth[k+1] = sed_layer_depth[k] + dz0 * pow(r, k - 1);
+                }
+            }
+            if (quiet < 2)
+                fprintf(stderr, "     sed_heat_model = 2: auto soil grid (5mm surface cell), "
+                        "%d nodes over %.3f m\n", n_sed_layers, sed_temp_depth);
+        } else if ( get_nml_listlen(namlst, "sediment", "sed_layer_depth") < n_sed_layers ) {
             fprintf(stderr, "     ERROR: sed_layer_depth list shorter than n_sed_layers (%d)\n", n_sed_layers);
             exit(1);
         }
@@ -1100,6 +1208,9 @@ void init_glm(int *jstart, char *outp_dir, char *outp_fn, int *nsave)
             fprintf(stderr, "     ERROR: sed_vwc must have 1 or n_sed_layers (%d) entries\n", n_sed_layers);
             exit(1);
         }
+        /* Resolve porosity (Python: 1 - bulk/mineral density) if left unset. */
+        if ( sed_porosity < 0.0 )
+            sed_porosity = 1.0 - sed_bulk_density / sed_mineral_density;
 
         for (i = 0; i < n_zones; i++) {
             theZones[i].n_sed_layers = n_sed_layers;
@@ -1110,21 +1221,25 @@ void init_glm(int *jstart, char *outp_dir, char *outp_fn, int *nsave)
                     (sed_vwc == NULL) ? 0.4 : (vwc_len == 1 ? sed_vwc[0] : sed_vwc[k]);
             }
 #if !USE_DL_LOADER
-            /* Spin up the profile toward quasi-equilibrium before the run.
-             * NOTE: InitialTemp (libaed-water, upstream) hard-codes its surface
-             * boundary to ~5 degC during the spin-up iterations and ignores the
-             * passed topTemp -- an upstream quirk, not a bug introduced here. */
+            /* Spin up the cell-centred soil profile to quasi-equilibrium
+             * (faithful port of intertidal-soil initial_temp).  Slot layout:
+             *   layers[0]          = surface boundary node (Dirichlet = ztemp)
+             *   layers[1..nsl-2]   = the n interior cells (the prognostic state)
+             *   layers[nsl-1]      = deep boundary node (Dirichlet = deepT). */
             {
-                int      m       = n_sed_layers - 2;
-                AED_REAL wv      = (sed_vwc == NULL) ? 0.4 : sed_vwc[0];
-                AED_REAL botTemp = (sed_temp_mean != NULL) ? sed_temp_mean[i] : 10.0;
-                AED_REAL topTemp = botTemp;
-                AED_REAL *tNew   = calloc(n_sed_layers, sizeof(AED_REAL));
-                InitialTemp(&m, sed_layer_depth, &wv, &topTemp, &botTemp,
-                            &sed_spinup_days, tNew);
-                for (k = 0; k < n_sed_layers; k++)
-                    theZones[i].layers[k].temp = tNew[k];
-                free(tNew);
+                int      n       = n_sed_layers - 2;
+                AED_REAL vwc0    = (sed_vwc == NULL) ? 0.4 : sed_vwc[0];
+                AED_REAL surfT   = (sed_temp_mean != NULL) ? sed_temp_mean[i] : 10.0;
+                AED_REAL deepT   = (sed_deep_temp > -9000.0) ? sed_deep_temp : surfT;
+                AED_REAL spin_dt = 900.0;        /* spin-up dt (s); Python default */
+                AED_REAL *cellT  = calloc(n, sizeof(AED_REAL));
+                InitialTempFV(&n, sed_layer_depth, &vwc0, &surfT, &deepT,
+                              &sed_spinup_days, &spin_dt, cellT);
+                theZones[i].layers[0].temp              = surfT;
+                for (k = 0; k < n; k++)
+                    theZones[i].layers[k+1].temp        = cellT[k];
+                theZones[i].layers[n_sed_layers-1].temp = deepT;
+                free(cellT);
             }
 #endif
         }
@@ -1331,14 +1446,15 @@ for (i = 0; i < n_zones; i++) {
         if (need_free2) free(outlet_type);
     }
     if ( outlet_crit != NULL ) { // only relevant if we have defined it.
-        if ((crit_O2 < 0) || (crit_O2_dep < base_elev) || (crit_O2_days < 1)) {
-            fprintf(stderr, "     ERROR: crit_O2 < 0 or crit_O2_dep < base elevation or crit_O2_days < 1\n");
+        if ((crit_val_in < 0) || (crit_dep_in < base_elev) || (crit_days_in < 1)) {
+            fprintf(stderr, "     ERROR: crit_val < 0 or crit_dep < base elevation or crit_days < 1\n");
             exit(1);
         }
     }
-    O2crit = crit_O2;
-    O2critdep = crit_O2_dep;
-    O2critdays = crit_O2_days;
+    crit_val = crit_val_in;
+    crit_dep = crit_dep_in;
+    crit_days = crit_days_in;
+    CRITabove = crit_above_in;
     MIXwithdraw = mix_withdraw;
     COUPLoxy = coupl_oxy_sw;
     MINlaketemp = min_lake_temp;
@@ -1466,14 +1582,14 @@ for (i = 0; i < n_zones; i++) {
         }
 
         for (j = 0; j < NumOut; j++) {
-            if ( O2name != NULL ) {
-                size_t tl = strlen(O2name[j]);
-                O2idx = wq_var_index_c(O2name[j],&tl);
-                if (O2idx < 0) {
-                    fprintf(stderr, "     wrong oxygen name for outlet %3d ?\n",j+1); // How does it exit???
-                    Outflows[j].O2idx = -1;
+            if ( crit_varname != NULL ) {
+                size_t tl = strlen(crit_varname[j]);
+                crit_idx_in = wq_var_index_c(crit_varname[j],&tl);
+                if (crit_idx_in < 0) {
+                    fprintf(stderr, "     wrong crit_varname for outlet %3d ?\n",j+1);
+                    Outflows[j].crit_idx = -1;
                 } else  {
-                    Outflows[j].O2idx = O2idx;
+                    Outflows[j].crit_idx = crit_idx_in;
                 }
             }
         }
@@ -1511,6 +1627,21 @@ for (i = 0; i < n_zones; i++) {
             if ( oxy_fl != NULL && oxy_fl[0] != NULL )
                 oxy_open_recirc_file(oxy_fl[0], timefmt_oxy);
         }
+    }
+
+    // Read bubbler configuration (optional block)
+    if ( get_namelist(namlst, bubbler) )
+        bubbler_on = FALSE;
+    if ( bubbler_on ) {
+        //# namelist strings are freed by close_namelist below; the bubbler
+        //# reads them later (init_bubbler), so keep persistent copies here.
+        if ( bubbler_data_file != NULL ) bubbler_data_file = strdup(bubbler_data_file);
+        if ( bubbler_start     != NULL ) bubbler_start     = strdup(bubbler_start);
+        if ( bubbler_stop      != NULL ) bubbler_stop      = strdup(bubbler_stop);
+        if ( bubbler_eff_file  != NULL ) bubbler_eff_file  = strdup(bubbler_eff_file);
+
+        if ( bubbler_data_file != NULL )
+            open_bubbler_file(bubbler_data_file, NULL);
     }
 
     get_namelist(namlst, debugging);
