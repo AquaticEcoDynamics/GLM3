@@ -1066,14 +1066,18 @@ void end_model()
     close_outflow_files();
     close_withdrtemp_files();
 
+    /* Write the final NetCDF restart file BEFORE any WQ state is freed.
+     * write_glm_restart() reads WQ_Vars / WQS_Vars / WQD_Vars, which
+     * wq_clean_glm() deallocates, so it must run first (otherwise the restart
+     * write is a use-after-free — harmless for the small pelagic array, but a
+     * hard segfault once the larger cc_diag/WQD_Vars array is read). */
+    if (restart_fname != NULL)
+        write_glm_restart(restart_fname);
+
     if (wq_calc) wq_clean_glm();    //# deallocataes wq stuff
 
     if ( bubbler_on ) done_bubbler();
 
     close_output();
-
-    /* Write the final NetCDF restart file if configured */
-    if (restart_fname != NULL)
-        write_glm_restart(restart_fname);
 }
 /*++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*/
