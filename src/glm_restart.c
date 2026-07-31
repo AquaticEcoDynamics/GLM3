@@ -9,17 +9,17 @@
  *     MeanHeight, Vol1, Density, Epsilon, Umean, Uorb, LayerStress,          *
  *     ExtcCoefSW)                                                            *
  *   - WQ per-layer variables (WQ_Vars)                                       *
- *   - WQ per-layer diagnostics (WQD_Vars) — cc_diag persists between steps   *
- *   - Surface state (AvgSurfTemp, delzBlueIce, delzWhiteIce, delzSnow,      *
+ *   - WQ per-layer diagnostics (WQD_Vars) : cc_diag persists between steps   *
+ *   - Surface state (AvgSurfTemp, delzBlueIce, delzWhiteIce, delzSnow,       *
  *     RhoSnow)                                                               *
- *   - Mixer state (DepMX, PrevThick, Energy_AvailableMix, OldSlope,         *
- *     Time_count_end_shear, Time_count_sim, Half_Seiche_Period, FO, FSUM,   *
+ *   - Mixer state (DepMX, PrevThick, Energy_AvailableMix, OldSlope,          *
+ *     Time_count_end_shear, Time_count_sim, Half_Seiche_Period, FO, FSUM,    *
  *     u_f, u0, u_avg, Mixer_Count)                                           *
- *   - Benthic WQ sheet variables (WQS_Vars, Num_WQ_Ben)                     *
- *   - Per-inflow insertion queue (DOld, QIns, TIns, SIns, DIIns, InPar,     *
+ *   - Benthic WQ sheet variables (WQS_Vars, Num_WQ_Ben)                      *
+ *   - Per-inflow insertion queue (DOld, QIns, TIns, SIns, DIIns, InPar,      *
  *     NoIns, iCnt, SubmHeight, WQIns)                                        *
- *   - Sediment layer temps per zone when sed_heat_model == 2                *
- *   - Particle (PTM) state: PTM_Stat and PTM_Vars (when ptm_sw is TRUE)     *
+ *   - Sediment layer temps per zone when sed_heat_model == 2                 *
+ *   - Particle (PTM) state: PTM_Stat and PTM_Vars (when ptm_sw is TRUE)      *
  *                                                                            *
  * Developed by :                                                             *
  *     AquaticEcoDynamics (AED) Group                                         *
@@ -300,6 +300,13 @@ void write_glm_restart(const char *fn)
         def_var_d(ncid, "zone_ztemp",     1, &dim_zones, &id_zztemp);
     }
 
+    /* Per-zone bed->water heat accumulated over the run [J]. Present whenever
+     * zones + sediment heating are active (any sed_heat_model). WRITE-ONLY:
+     * GLM never reads it back, so it cannot perturb restart continuity. */
+    int id_sedenergy = -1;
+    if (sed_zone_energy != NULL)
+        def_var_d(ncid, "sed_zone_energy", 1, &dim_zones, &id_sedenergy);
+
     /* PTM particle state [ptm_stat_vars, ptm_particles] and
      *                    [ptm_wq_vars,   ptm_particles]             */
     int id_ptm_stat = -1, id_ptm_vars = -1;
@@ -512,6 +519,14 @@ void write_glm_restart(const char *fn)
         RST_CHECK(nc_put_var_double(ncid, id_sedhf,   hfbuf));
         RST_CHECK(nc_put_var_double(ncid, id_zztemp,  ztbuf));
         free(stbuf); free(hfbuf); free(ztbuf);
+    }
+    /* Per-zone accumulated bed->water heat [J] (write-only; see def above). */
+    if (sed_zone_energy != NULL) {
+        AED_REAL *ebuf = malloc(n_zones * sizeof(AED_REAL));
+        if (!ebuf) { fprintf(stderr, "glm_restart: out of memory\n"); exit(1); }
+        for (int z = 0; z < n_zones; z++) ebuf[z] = sed_zone_energy[z];
+        RST_CHECK(nc_put_var_double(ncid, id_sedenergy, ebuf));
+        free(ebuf);
     }
 
     /* PTM particle state

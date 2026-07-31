@@ -1182,29 +1182,70 @@ void do_surface_thermodynamics(int jday, int iclock, int LWModel,
                       Lake[i].Temp += theZones[z].heatflux
                               * ((Lake[i].LayerArea - Lake[i-1].LayerArea) * noSecs)
                               / (SPHEAT * Lake[i].Density * Lake[i].LayerVol);
+                      //# accumulate the exact Joules delivered to the water from
+                      //# this zone's bed (= flux * bed-contact area * dt), summed
+                      //# over layers and sub-steps -> written to restart.nc.
+                      if ( sed_zone_energy != NULL )
+                        sed_zone_energy[z] += theZones[z].heatflux
+                              * (Lake[i].LayerArea - Lake[i-1].LayerArea) * noSecs;
                     }
                   }
                }
-            } else if ( sed_heat_model == 1 ){
-              for (i = botmLayer+1; i <= surfLayer; i++) {
-
-
-                                if(i == 5){
-                    //fprintf(stdout, "Lake[i].Temp %f soil_heat_flux, %f Lake[i].LayerArea, %f Lake[i-1].LayerArea, %f Lake[i].Density, %f Lake[i].LayerVol %f\n",  Lake[i].Temp, soil_heat_flux, Lake[i].LayerArea,Lake[i-1].LayerArea, Lake[i].Density, Lake[i].LayerVol);
-                  }
-                TYEAR = sed_temp_mean[layer_zone[i]]
-                        + sed_temp_amplitude[layer_zone[i]]
-                        * cos(((kDays-sed_temp_peak_doy[layer_zone[i]])*2.*Pi)/365.);
-                soil_heat_flux = KSED * (TYEAR - Lake[i].Temp) / ZSED;
-                Lake[i].Temp += soil_heat_flux
+            } else if ( sed_heat_model == 1 ) {
+                for (i = botmLayer+1; i <= surfLayer; i++) {
+                    TYEAR = sed_temp_mean[layer_zone[i]]
+                          + sed_temp_amplitude[layer_zone[i]]
+                          * cos(((kDays-sed_temp_peak_doy[layer_zone[i]])*2.*Pi)/365.);
+                    soil_heat_flux = KSED * (TYEAR - Lake[i].Temp) / ZSED;
+                    Lake[i].Temp += soil_heat_flux
                               * ((Lake[i].LayerArea - Lake[i-1].LayerArea) * noSecs)
                               / (SPHEAT * Lake[i].Density * Lake[i].LayerVol);
-              }
+                    //# accumulate the exact Joules delivered to this layer's water
+                    //# from its zone's bed (= flux * flank area * dt) -> restart.nc.
+                    if ( sed_zone_energy != NULL )
+                        sed_zone_energy[layer_zone[i]] += soil_heat_flux
+                                * (Lake[i].LayerArea - Lake[i-1].LayerArea) * noSecs;
+                }
 
-              TYEAR = sed_temp_mean[0] + sed_temp_amplitude[0] * cos(((kDays-sed_temp_peak_doy[0])*2.*Pi)/365.);
-              Lake[botmLayer].Temp += ((KSED * (TYEAR - Lake[botmLayer].Temp) / ZSED) *
+                TYEAR = sed_temp_mean[0] + sed_temp_amplitude[0] * cos(((kDays-sed_temp_peak_doy[0])*2.*Pi)/365.);
+                //# bottom layer sits on the flat lake bed: bed-contact area is its
+                //# full LayerArea. Compute the flux into the local so we can both
+                //# apply it and accumulate the identical Joules (uses pre-update Temp).
+                soil_heat_flux = KSED * (TYEAR - Lake[botmLayer].Temp) / ZSED;
+                Lake[botmLayer].Temp += (soil_heat_flux *
                                       Lake[botmLayer].LayerArea * noSecs) /
                                       (SPHEAT * Lake[botmLayer].Density*Lake[botmLayer].LayerVol);
+                if ( sed_zone_energy != NULL )
+                    sed_zone_energy[layer_zone[botmLayer]] += soil_heat_flux
+                                  * Lake[botmLayer].LayerArea * noSecs;
+            } else if ( sed_heat_model == 3 && sed_zone_heat != NULL ) {
+                //# Prescribed per-zone heat. Deposit each zone's total power
+                //# sed_zone_heat[z] [W] across its water layers, weighted by
+                //# bed-contact area (flank area for interior layers, full LayerArea
+                //# for the bottom). The weights sum to 1 within a zone, so the
+                //# Joules delivered == sed_zone_heat[z]*noSecs exactly ->
+                //# energy-conserving, and with no dependence on Lake[].Temp there
+                //# is NO relaxation gap.
+                for (z = 0; z < n_zones; z++) {
+                    //# pass 1: this zone's total bed-contact area
+                    AED_REAL za = 0.0;
+                    for (i = botmLayer; i <= surfLayer; i++) {
+                        if (layer_zone[i] != z) continue;
+                        za += (i == botmLayer) ? Lake[i].LayerArea
+                                  : (Lake[i].LayerArea - Lake[i-1].LayerArea);
+                    }
+                    if (za <= 0.0) continue;   //# dry/absent zone -> nothing to heat
+                    //# pass 2: deposit power * area-fraction into each layer
+                    for (i = botmLayer; i <= surfLayer; i++) {
+                        if (layer_zone[i] != z) continue;
+                        AED_REAL a_i = (i == botmLayer) ? Lake[i].LayerArea
+                                    : (Lake[i].LayerArea - Lake[i-1].LayerArea);
+                        AED_REAL dE = sed_zone_heat[z] * (a_i/za) * noSecs;
+                        Lake[i].Temp += dE /
+                            (SPHEAT * Lake[i].Density * Lake[i].LayerVol);
+                        if ( sed_zone_energy != NULL ) sed_zone_energy[z] += dE;
+                    }
+                }
             }
         }
 //        if (littoral_sw) {

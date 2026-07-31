@@ -566,6 +566,7 @@ void init_glm(int *jstart, char *outp_dir, char *outp_fn, int *nsave)
     extern AED_REAL *sed_layer_depth;
     extern AED_REAL *sed_vwc;
     extern AED_REAL  sed_spinup_days;
+    extern AED_REAL *sed_zone_heat;
     //#   dynamic soil-model thermal properties (optional; Fortran-owned globals)
     extern AED_REAL  sed_k_mineral, sed_k_water, sed_k_air;
     extern AED_REAL  sed_c_mineral, sed_c_water, sed_c_air;
@@ -588,6 +589,7 @@ void init_glm(int *jstart, char *outp_dir, char *outp_fn, int *nsave)
           { "sed_temp_mean",     TYPE_DOUBLE|MASK_LIST, &sed_temp_mean        },
           { "sed_temp_amplitude",TYPE_DOUBLE|MASK_LIST, &sed_temp_amplitude   },
           { "sed_temp_peak_doy", TYPE_DOUBLE|MASK_LIST, &sed_temp_peak_doy    },
+          { "sed_zone_heat",     TYPE_DOUBLE|MASK_LIST, &sed_zone_heat        },
           { "sed_heat_Ksoil",    TYPE_DOUBLE,           &sed_heat_Ksoil       },
           { "sed_temp_depth",    TYPE_DOUBLE,           &sed_temp_depth       },
 
@@ -1088,6 +1090,27 @@ void init_glm(int *jstart, char *outp_dir, char *outp_fn, int *nsave)
         memcpy(tr, sed_temp_peak_doy, sz * sizeof(AED_REAL));
         sed_temp_peak_doy = tr;
     }
+    if ( sed_zone_heat != NULL ) {
+        //# Repack ONLY when sed_zone_heat is actually present in THIS namelist. Gate
+        //# on the nml list length, not on the global pointer: in library mode the
+        //# global persists across glm_run_with_nml calls, so a run whose nml omits
+        //# sed_zone_heat (e.g. sed_heat_model 1/2) would otherwise see the stale
+        //# pointer, find listlen 0, and wrongly abort "list too short". When present
+        //# the parser has freshly malloc'd it; copy out before namelist teardown
+        //# free()s that buffer (same reason the sed_temp_* repacks above exist).
+        int sz = get_nml_listlen(namlst, "sediment", "sed_zone_heat");
+        if ( sz > 0 ) {
+            if ( sz < n_zones ) {
+                fprintf(stderr, "sed_zone_heat list too short in sediment\n");
+                err = TRUE;
+            }
+            if ( sed_zone_heat != NULL ) {
+                AED_REAL *tr = malloc(sz * sizeof(AED_REAL));
+                memcpy(tr, sed_zone_heat, sz * sizeof(AED_REAL));
+                sed_zone_heat = tr;
+            }
+        }
+    }
     if (err) exit(1);
 
     if ( sed_reflectivity == NULL ) {
@@ -1128,6 +1151,20 @@ void init_glm(int *jstart, char *outp_dir, char *outp_fn, int *nsave)
         }
         if (sed_temp_peak_doy == NULL) {
             sed_temp_peak_doy = calloc(t_zones, sizeof(AED_REAL));
+        }
+        //# Per-zone bed->water heat accumulator [J]. (Re)allocate and zero every
+        //# run: in library mode GLM globals persist across glm_run_with_nml calls,
+        //# so this zeroing is what resets the accumulated total. calloc() zeroes.
+        if ( n_zones > 0 ) {
+            if ( sed_zone_energy != NULL ) free(sed_zone_energy);
+            sed_zone_energy = calloc(n_zones, sizeof(AED_REAL));
+        }
+        //# Prescribed per-zone heat [W] (sed_heat_model==3). If the nml provided
+        //# a shorter/absent list, (re)allocate zeroed so an unset zone contributes
+        //# no heat and we never read past the list. If the nml DID supply values,
+        //# preserve them (only allocate when still NULL).
+        if ( n_zones > 0 && sed_zone_heat == NULL ) {
+            sed_zone_heat = calloc(n_zones, sizeof(AED_REAL));
         }
     }
 

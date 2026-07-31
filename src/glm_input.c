@@ -641,7 +641,7 @@ void open_evap_file(const char *fname, const char *timefmt)
         fprintf(stderr, "Failed to open '%s'\n", fname);
         exit(1);
     }
-    locate_time_column(kwf, "Kd", fname);
+    locate_time_column(kwf, "Evap", fname);
     if ( (evap_idx = find_csv_var(kwf, "Evap")) < 0 ) {
         fprintf(stderr,"Error in Evap file, Evap not found!\n");
         exit(1);

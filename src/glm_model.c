@@ -378,7 +378,8 @@ void do_model(int jstart, int nsave)
         read_daily_inflow(jday, NumInf, FlowNew, TempNew, SaltNew, Elev, WQNew);
 //      read_daily_gw(jday, gw_mode, GWFlNew);
         read_daily_evap(jday, &DailyEvap);
-        f_evap_ts_prop = DailyEvap / (noSecs * Lake[surfLayer].LayerArea);
+        // f_evap_ts_prop = DailyEvap / (noSecs * Lake[surfLayer].LayerArea);
+        f_evap_ts_prop = -DailyEvap / SecsPerDay;
         //# Averaging of flows
         //# To get daily inflow (i.e. m3/day) times by SecsPerDay
         //# (stoptime - startTOD) allow for partial dates at the the beginning and end of
@@ -626,7 +627,8 @@ void do_model_non_avg(int jstart, int nsave)
         read_daily_inflow(jday, NumInf, FlowNew, TempNew, SaltNew, Elev, WQNew);
 //      read_daily_gw(jday, gw_mode, GWFlNew);
         read_daily_evap(jday, &DailyEvap);
-        f_evap_ts_prop = DailyEvap / (noSecs * Lake[surfLayer].LayerArea);
+        // f_evap_ts_prop = DailyEvap / (noSecs * Lake[surfLayer].LayerArea);
+        f_evap_ts_prop = -DailyEvap / SecsPerDay;
 
         //# To get daily inflow (i.e. m3/day) times by SecsPerDay
         for (i = 0; i < NumInf; i++) {
