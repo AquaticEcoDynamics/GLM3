@@ -279,7 +279,7 @@ void init_glm(int *jstart, char *outp_dir, char *outp_fn, int *nsave)
           { "salt_fall",         TYPE_DOUBLE,           &salt_fall            },
           { "meteo_fl",          TYPE_STR,              &meteo_fl             },
           { "subdaily",          TYPE_BOOL,             &subdaily             },
-          { "atm_stab",          TYPE_BOOL,             &atm_stab             },
+          { "atm_stab",          TYPE_INT,              &atm_stab             },
           { "rad_mode",          TYPE_INT,              &rad_mode             },
           { "albedo_mode",       TYPE_INT,              &albedo_mode          },
           { "cloud_mode",        TYPE_INT,              &cloud_mode           },

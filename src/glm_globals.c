@@ -55,7 +55,11 @@ int Tot_WQ_Vars = 0;   //# nVars+nBen
 int Num_WQD_Vars = 0;  //# number of diagnostic water quality variables
 int Num_WQDS_Vars = 0; //# number of diagnostic benthic water quality variables
 
-CLOGICAL atm_stab = 0; //# Account for non-neutral atmospheric stability
+CLOGICAL atm_stab = 0; //# Non-neutral atmospheric stability correction of the
+                       //  surface heat fluxes: 0 = off (neutral bulk fluxes);
+                       //  1 = Monin-Obukhov iteration + free-convection floor;
+                       //  2 = free-convection floor only (no M-O iteration);
+                       //  3 = Monin-Obukhov iteration only (no floor)
 
 //------------------------------------------------------------------------------
 
