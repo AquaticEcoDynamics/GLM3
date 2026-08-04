@@ -80,6 +80,305 @@ static void create_lake(int namlst);
 static void initialise_lake(int namlst);
 static int init_time(const char *start, char *stop, int timefmt, int *startTOD, int *stopTOD, int *nDays);
 
+/******************************************************************************
+ * One-line descriptions used by `--write_nml` to annotate the baseline nml.  *
+ * This is the ONE part of the generator that is not derived from the code:  *
+ * a parameter missing here just prints without a comment, so an incomplete  *
+ * table degrades gracefully rather than needing to be kept exhaustively in  *
+ * sync -- add entries here as parameters are added or as gaps are noticed.  *
+ * A key shared by several blocks (eg. "time_fmt") gets one description that *
+ * has to read sensibly in each of those blocks.                             *
+ ******************************************************************************/
+typedef struct { const char *key; const char *desc; } NmlHelp;
+static const NmlHelp glm_nml_help[] = {
+    //-- glm_setup ------------------------------------------------------------
+    { "sim_name",        "Free-text label for this simulation" },
+    { "max_layers",      "Maximum number of vertical layers GLM may create" },
+    { "min_layer_vol",   "Minimum layer volume (m3) before layers are merged" },
+    { "min_layer_thick", "Minimum layer thickness (m) before layers are merged" },
+    { "max_layer_thick", "Maximum layer thickness (m) before a layer is split" },
+    { "density_model",   "Equation of state: 1=freshwater, 2=marine, 3=salinity-only" },
+    { "littoral_sw",      "Enable the onshore/offshore littoral zone layers" },
+    { "non_avg",          "Use the non-averaged (event-resolving) integration scheme" },
+    //-- mixing -----------------------------------------------------------------
+    { "surface_mixing",  "Surface mixing scheme: 0=off, 1=classic, 2=Kelvin-Helmholtz-enabled" },
+    { "coef_mix_conv",   "Mixing efficiency, convective overturn" },
+    { "coef_wind_stir",  "Mixing efficiency, wind stirring" },
+    { "coef_mix_turb",   "Mixing efficiency, unsteady turbulence" },
+    { "coef_mix_shear",  "Mixing efficiency, shear production" },
+    { "coef_mix_shreq",  "Mixing efficiency, shear in equilibrium regime" },
+    { "coef_mix_KH",     "Mixing efficiency, Kelvin-Helmholtz billowing" },
+    { "coef_mix_hyp",    "Diffusivity applied in the hypolimnion (m2/s)" },
+    { "deep_mixing",     "Deep mixing scheme: 0=off, 1=constant diffusivity, 2=Weinstock" },
+    { "diff",            "Background molecular diffusivity per water-quality variable" },
+    //-- wq_setup ---------------------------------------------------------------
+    { "wq_lib",           "Water-quality library to link: 'aed' or 'aed2'" },
+    { "wq_nml_file",      "Path to the water-quality library's own namelist file" },
+    { "ode_method",       "ODE integrator used by the water-quality solver" },
+    { "split_factor",     "Water-quality sub-stepping factor relative to the physics timestep" },
+    { "bioshade_feedback","Let simulated algae/turbidity feed back on light extinction" },
+    { "repair_state",     "Clip water-quality states back into a valid range after solving" },
+    { "mobility_off",     "Disable settling/floating of water-quality state variables" },
+    { "link_ext_par",     "Use externally-supplied PAR instead of computing it from shortwave" },
+    //-- time --------------------------------------------------------------------
+    { "timefmt",  "Run length method: 2=start+stop dates, 3=start date+num_days" },
+    { "start",    "Simulation start date/time, 'yyyy-mm-dd hh:mm:ss'" },
+    { "stop",     "Simulation stop date/time (only used if timefmt=2)" },
+    { "dt",       "Integration timestep (s)" },
+    { "num_days", "Number of days to simulate (only used if timefmt=3)" },
+    { "timezone", "UTC offset (hours) this block's data/timestamps are in" },
+    //-- output -------------------------------------------------------------------
+    { "out_dir",              "Directory to write model output into" },
+    { "out_fn",               "Base filename (no extension) for the NetCDF output file" },
+    { "nsave",                "Save output every N timesteps" },
+    { "restart_fname",        "NetCDF file to write model-state restart snapshots to" },
+    { "restart_nsave",        "Write a restart snapshot every N timesteps (0 = never)" },
+    { "csv_point_nlevs",      "Number of fixed-depth CSV output points" },
+    { "csv_point_fname",      "Base filename for the fixed-depth CSV output(s)" },
+    { "csv_point_frombot",    "Measure csv_point_at from the lake bottom instead of the surface" },
+    { "csv_point_at",         "Depth/height (m) of each fixed-depth CSV output point" },
+    { "csv_point_depth_avg",  "Depth-average each CSV point over [zone_lower, zone_upper] instead of a single depth" },
+    { "csv_point_zone_upper", "Upper bound (m) of the depth-averaging window per CSV point" },
+    { "csv_point_zone_lower", "Lower bound (m) of the depth-averaging window per CSV point" },
+    { "csv_point_nvars",      "Number of variables written to the point CSV output(s)" },
+    { "csv_point_vars",       "Names of variables written to the point CSV output(s)" },
+    { "csv_lake_fname",       "Filename for the whole-lake summary CSV (surface temp, volume, etc.)" },
+    { "csv_outlet_allinone",  "Write all outlet CSVs into a single combined file" },
+    { "csv_outlet_fname",     "Base filename for the outlet CSV output(s)" },
+    { "csv_outlet_nvars",     "Number of variables written to the outlet CSV output(s)" },
+    { "csv_outlet_vars",      "Names of variables written to the outlet CSV output(s)" },
+    { "csv_ovrflw_fname",     "Filename for the crest-overflow CSV output" },
+    //-- meteorology ----------------------------------------------------------------
+    { "met_sw",       "Enable surface meteorological forcing" },
+    { "lw_type",      "Longwave input type: 'LW_IN' (incoming), 'LW_CC' (cloud cover), 'LW_NET' (net)" },
+    { "rain_sw",      "Rainfall carries dissolved constituents (adds a 'RainConc' met column)" },
+    { "salt_fall",    "Salinity of falling rain/snow (psu)" },
+    { "meteo_fl",     "Path to the meteorology forcing CSV" },
+    { "subdaily",     "Meteorology file has sub-daily (not daily) timesteps" },
+    { "atm_stab",     "Apply an atmospheric-stability correction to the bulk transfer coefficients" },
+    { "rad_mode",     "Shortwave/longwave radiation transfer mode" },
+    { "albedo_mode",  "Surface albedo scheme: 1=Hamilton&Schladow, 2=Lake Kivu, 3=seasonal mean/amplitude" },
+    { "cloud_mode",    "Cloud-correction scheme for longwave radiation" },
+    { "fetch_mode",    "Wind-fetch reduction scheme: 0=off, 1=constant, 2=scaled, 3=file-driven" },
+    { "wind_factor",   "Multiplier applied to input wind speed" },
+    { "sw_factor",     "Multiplier applied to input shortwave radiation" },
+    { "lw_factor",     "Multiplier applied to input longwave radiation" },
+    { "lw_offset",     "Additive offset applied to input longwave radiation" },
+    { "at_factor",     "Multiplier applied to input air temperature" },
+    { "at_offset",     "Additive offset applied to input air temperature" },
+    { "rh_factor",     "Multiplier applied to input relative humidity" },
+    { "rain_factor",   "Multiplier applied to input rainfall" },
+    { "CD",            "Bulk aerodynamic momentum transfer coefficient" },
+    { "CE",            "Bulk aerodynamic latent heat transfer coefficient" },
+    { "CH",            "Bulk aerodynamic sensible heat transfer coefficient" },
+    { "Aws",           "Constant fetch-reduction wind factor (fetch_mode=1)" },
+    { "Xws",           "Distance-scaled fetch-reduction wind factor (fetch_mode=2)" },
+    { "Fws",           "Path to a fetch-reduction-factor CSV (fetch_mode=3)" },
+    { "catchrain",     "Route rainfall on exposed lake-bed area back in as runoff" },
+    { "rain_threshold","Minimum daily rainfall (m) before runoff is generated" },
+    { "runoff_coef",   "Fraction of catchment rainfall converted to runoff" },
+    { "time_fmt",       "Date/time format used by this block's data file" },
+    { "link_solar_shade","Reduce shortwave by an externally-supplied shading fraction" },
+    { "link_rain_loss",  "Apply an externally-supplied fractional rainfall loss" },
+    { "link_bottom_drag","Use an externally-supplied bottom drag coefficient" },
+    { "use_met_atm_pres","Use atmospheric pressure from the meteorology file instead of a fixed value" },
+    //-- light -------------------------------------------------------------------
+    { "albedo_mean",      "Mean surface albedo (albedo_mode=3)" },
+    { "albedo_amplitude", "Seasonal amplitude of surface albedo (albedo_mode=3)" },
+    { "light_mode",       "Light-extinction scheme: 0=single Kw, 1=multi-band" },
+    { "n_bands",          "Number of spectral light bands (light_mode=1)" },
+    { "light_extc",       "Light extinction coefficient per band (light_mode=1)" },
+    { "energy_frac",      "Fraction of shortwave energy in each band (light_mode=1)" },
+    { "Benthic_Imin",     "Minimum benthic irradiance below which macrophyte/benthic light limitation applies" },
+    { "Kw",               "Background light extinction coefficient (m-1), light_mode=0" },
+    { "Kw_file",          "Path to a time-varying light-extinction-coefficient CSV, overriding Kw" },
+    //-- bird_model ---------------------------------------------------------------
+    { "AP",      "Atmospheric pressure (mb) used by the Bird clear-sky solar model" },
+    { "Oz",      "Ozone concentration (atm-cm) used by the Bird clear-sky solar model" },
+    { "WatVap",  "Precipitable water vapour (atm-cm) used by the Bird clear-sky solar model" },
+    { "AOD500",  "Aerosol optical depth at 500nm, used by the Bird clear-sky solar model" },
+    { "AOD380",  "Aerosol optical depth at 380nm, used by the Bird clear-sky solar model" },
+    { "Albedo",  "Ground albedo used by the Bird clear-sky solar model" },
+    //-- inflow -------------------------------------------------------------------
+    { "num_inflows",      "Number of inflow streams" },
+    { "names_of_strms",   "Label for each inflow stream" },
+    { "subm_flag",        "Whether each inflow is submerged (enters below the surface) rather than surface-driven" },
+    { "subm_height",      "Fixed submerged-inflow entry height above the bottom (m), per stream" },
+    { "subm_elev",        "Deprecated alias for subm_height" },
+    { "strm_hf_angle",    "Stream half-angle (degrees) used in the inflow entrainment calculation" },
+    { "strmbd_slope",     "Streambed slope (degrees) used in the inflow entrainment calculation" },
+    { "strmbd_drag",      "Streambed drag coefficient used in the inflow entrainment calculation" },
+    { "inflow_factor",    "Multiplier applied to each inflow's flow rate" },
+    { "inflow_fl",        "Path to each inflow's forcing CSV" },
+    { "inflow_varnum",    "Number of water-quality variables carried by the inflow files" },
+    { "inflow_vars",      "Names of the water-quality variables carried by the inflow files" },
+    { "coef_inf_entrain", "Entrainment coefficient for inflow inertial mixing" },
+    //-- outflow ------------------------------------------------------------------
+    { "num_outlet",     "Number of outlets" },
+    { "outlet_type",    "Outlet type per outlet: 1=fixed, 2=floating, 3=adaptive-temp, 4-6=other withdrawal modes" },
+    { "crit_O2",        "Dissolved oxygen threshold (mmol/m3) used to trigger a critical outlet" },
+    { "crit_O2_dep",     "Depth (m) at which crit_O2 is evaluated" },
+    { "crit_O2_days",    "Consecutive days below crit_O2 required before the critical outlet triggers" },
+    { "outlet_crit",     "Withdrawal-trigger threshold value per outlet" },
+    { "O2name",          "Water-quality variable name used as the oxygen threshold for each outlet" },
+    { "O2idx",           "Resolved internal index for O2name (set at runtime)" },
+    { "target_temp",     "Target withdrawal temperature per outlet, for temperature-tracking outlets" },
+    { "min_lake_temp",   "Minimum lake temperature below which temperature-tracking outlets are disabled" },
+    { "fac_range_upper", "Upper search-range factor for temperature-tracking outlet withdrawal depth" },
+    { "fac_range_lower", "Lower search-range factor for temperature-tracking outlet withdrawal depth" },
+    { "mix_withdraw",    "Mix the withdrawn layer(s) fully before removing water" },
+    { "coupl_oxy_sw",    "Couple outlet withdrawal depth to the oxygenation system" },
+    { "flt_off_sw",      "Whether each outlet floats with the water surface" },
+    { "outl_elvs",       "Elevation (m) of each outlet" },
+    { "bsn_len_outl",    "Basin length (m) at each outlet, for withdrawal-zone geometry" },
+    { "bsn_wid_outl",    "Basin width (m) at each outlet, for withdrawal-zone geometry" },
+    { "outflow_fl",      "Path to each outlet's target-flow forcing CSV" },
+    { "withdrTemp_fl",   "Path to a target-withdrawal-temperature forcing CSV" },
+    { "outflow_factor",  "Multiplier applied to each outlet's flow rate" },
+    { "outflow_vars",    "Names of water-quality variables tracked through each outlet" },
+    { "outflow_varnum",  "Number of water-quality variables tracked through the outlets" },
+    { "subm_elev_outflow","Fixed elevation (m) for a submerged (type 6) outlet" },
+    { "elev_idx_outflow", "Dynamic layer index for a submerged (type 6) outlet, overriding subm_elev_outflow" },
+    { "seepage",          "Enable constant seepage loss through the lake bed" },
+    { "seepage_rate",     "Seepage loss rate (m/day)" },
+    { "crest_width",      "Width (m) of the crest, used for overflow discharge" },
+    { "crest_factor",     "Discharge coefficient for flow over the crest" },
+    { "outflow_thick_limit","Minimum layer thickness (m) below which an outlet stops drawing from that layer" },
+    { "single_layer_draw", "Restrict each outlet's withdrawal to a single layer instead of spreading it" },
+    //-- evaporation ----------------------------------------------------------------
+    { "evap_file", "Path to a CSV of prescribed evaporation rates, overriding the computed value" },
+    //-- mass_balance ------------------------------------------------------------
+    { "balance_file",   "Filename for the water/mass-balance diagnostic CSV" },
+    { "balance_varnum", "Number of water-quality variables included in the mass-balance output" },
+    { "balance_vars",   "Names of water-quality variables included in the mass-balance output" },
+    //-- snowice -------------------------------------------------------------------
+    { "snow_albedo_factor",    "Multiplier applied to computed snow albedo" },
+    { "snow_rho_max",          "Maximum snow density (kg/m3), used for compaction" },
+    { "snow_rho_min",          "Minimum (fresh) snow density (kg/m3)" },
+    { "snow_water_equivalent", "Fresh-snow water-equivalent density ratio" },
+    { "snow_rain_compact",     "Snowpack compaction rate from rain-on-snow" },
+    { "K_ice_white",           "Thermal conductivity of white (snow) ice (W/m/K)" },
+    { "K_ice_blue",            "Thermal conductivity of blue (clear) ice (W/m/K)" },
+    { "K_water",               "Thermal conductivity of water used in the ice/snow heat balance (W/m/K)" },
+    { "f_sw_wl1",              "Fraction of shortwave in the short (band-1) wavelength range" },
+    { "f_sw_wl2",              "Fraction of shortwave in the long (band-2) wavelength range" },
+    { "attn_ice_blue_wl1",     "Blue-ice attenuation coefficient, wavelength band 1" },
+    { "attn_ice_blue_wl2",     "Blue-ice attenuation coefficient, wavelength band 2" },
+    { "attn_ice_white_wl1",    "White-ice attenuation coefficient, wavelength band 1" },
+    { "attn_ice_white_wl2",    "White-ice attenuation coefficient, wavelength band 2" },
+    { "attn_snow_wl1",         "Snow attenuation coefficient, wavelength band 1" },
+    { "attn_snow_wl2",         "Snow attenuation coefficient, wavelength band 2" },
+    { "rho_ice_blue",          "Density of blue (clear) ice (kg/m3)" },
+    { "rho_ice_white",         "Density of white (snow) ice (kg/m3)" },
+    { "min_ice_thickness",     "Minimum ice thickness (m) tracked before ice is considered melted" },
+    { "dt_iceon_avg",          "Averaging period (days) for detecting ice-on surface-temperature trend" },
+    { "avg_surf_temp_thres",   "Surface-temperature threshold used to detect ice formation" },
+    //-- fetch --------------------------------------------------------------------
+    { "fetch_sw",      "Enable directional wind-fetch limitation" },
+    { "num_dir",       "Number of wind directions with a defined fetch/shelter scale" },
+    { "wind_dir",      "Wind direction (degrees) for each fetch/shelter entry" },
+    { "fetch_scale",   "Shelter/fetch scale factor for each wind direction" },
+    { "edge_height",   "Height (m) of shoreline vegetation/terrain used in fetch sheltering" },
+    { "edge_porosity", "Porosity of shoreline vegetation/terrain used in fetch sheltering" },
+    //-- sediment -----------------------------------------------------------------
+    { "benthic_mode",     "Benthic coupling mode: 1=single well-mixed zone, 2=depth-resolved zones" },
+    { "n_zones",          "Number of benthic sediment zones (benthic_mode=2)" },
+    { "zone_heights",     "Upper depth boundary (m) of each benthic zone" },
+    { "sed_reflectivity", "Sediment surface reflectivity per zone, for sediment heat transfer" },
+    { "sed_roughness",    "Sediment surface roughness per zone, for benthic drag/heat transfer" },
+    { "sed_temp_mean",    "Mean annual sediment temperature per zone (degC)" },
+    { "sed_temp_amplitude","Seasonal sediment temperature amplitude per zone (degC)" },
+    { "sed_temp_peak_doy", "Day-of-year of peak sediment temperature per zone" },
+    { "sed_heat_Ksoil",   "Sediment thermal conductivity (W/m/K)" },
+    { "sed_temp_depth",   "Depth (m) below the sediment surface used for the heat-conduction gradient" },
+    { "sed_heat_model",   "Sediment heat model: 0=off, 1=sinusoidal analytical, 2=dynamic multi-layer" },
+    { "n_sed_layers",     "Number of soil-column nodes for the dynamic sediment heat model (sed_heat_model=2)" },
+    { "sed_layer_depth",  "Depth (m) of each sediment heat-model soil-column node" },
+    { "sed_vwc",          "Volumetric water content of the sediment soil column" },
+    { "sed_spinup_days",  "Days of spin-up used to initialise the dynamic sediment temperature profile" },
+    //-- groundwater ---------------------------------------------------------------
+    { "gw_mode", "Number of groundwater inflow/outflow points to simulate" },
+    { "gw_file", "Path to the groundwater forcing CSV" },
+    { "K_gw",    "Groundwater hydraulic conductivity" },
+    { "L_gw",    "Groundwater flow path length" },
+    //-- particles (PTM) -----------------------------------------------------------
+    { "ptm_sw",              "Enable the Lagrangian particle-tracking module" },
+    { "sed_deactivation",    "Deactivate particles once they settle to the lake bed" },
+    { "num_particle_grp",    "Number of particle groups tracked" },
+    { "max_particle_num",    "Maximum number of particles the model may hold at once" },
+    { "init_particle_num",   "Number of particles seeded at simulation start" },
+    { "inflow_conc",         "Particle concentration carried by each inflow" },
+    { "init_depth_min",      "Minimum depth (m) for initial particle seeding" },
+    { "init_depth_max",      "Maximum depth (m) for initial particle seeding" },
+    { "ptm_time_step",       "Sub-timestep (s) used by the particle-tracking integrator" },
+    { "ptm_diffusivity",     "Random-walk diffusivity applied to particle motion" },
+    { "particle_density",    "Particle density (kg/m3), used for settling velocity" },
+    { "particle_diameter",   "Particle diameter (m), used for settling velocity" },
+    { "settling_velocity",   "Fixed particle settling velocity (m/s), overriding the Stokes calculation" },
+    { "settling_efficiency", "Fraction of particles retained on settling (vs. resuspended)" },
+    { "do_particle_bgc",     "Couple particles to water-quality biogeochemistry" },
+    //-- debugging -----------------------------------------------------------------
+    { "debug_mixer",  "Print verbose mixer diagnostics" },
+    { "disable_evap", "Disable evaporation entirely (debugging aid)" },
+    //-- heat_pump -----------------------------------------------------------------
+    { "heat_pump_switch",      "Enable a heat-pump inflow/outflow temperature-exchange device" },
+    { "heat_pump_inflow_idx",  "Index of the inflow used as the heat pump's source" },
+    { "heat_pump_outflow_idx", "Index of the outlet used as the heat pump's return" },
+    { "heat_pump_temp_change", "Temperature change (degC) imposed across the heat pump" },
+    { "heat_pump_heat_flux",   "Heat flux (W) imposed by the heat pump, alternative to heat_pump_temp_change" },
+    //-- oxygenation ----------------------------------------------------------------
+    { "oxygenation_mode",             "Oxygenation system mode: 0=off, 1=fixed load, 2=per-device CSV, 3=recirculation" },
+    { "num_oxy",                      "Number of oxygenation devices" },
+    { "oxy_name",                     "Water-quality variable name the oxygenation system adds mass to" },
+    { "oxy_max",                      "Maximum oxygen concentration the system will raise the water to" },
+    { "oxy_input_type",               "Per-device oxygenation input type" },
+    { "oxy_height",                   "Height (m) above the bottom of each oxygenation device" },
+    { "oxy_load",                     "Fixed oxygen loading rate per device (oxygenation_mode=1)" },
+    { "oxy_flow",                     "Gas/water flow rate per device" },
+    { "oxy_conc",                     "Oxygen concentration supplied per device" },
+    { "oxy_fl",                       "Path to a per-device or recirculation forcing CSV" },
+    { "oxy_recirc_withdraw_height",   "Height (m) above the bottom water is withdrawn from for recirculation" },
+    { "oxy_recirc_return_height",     "Height (m) above the bottom recirculated water is returned to" },
+    { "oxy_recirc_flow",              "Recirculation flow rate (m3/s)" },
+    { "oxy_recirc_add",               "Oxygen mass-loading rate added during recirculation" },
+    //-- morphometry ----------------------------------------------------------------
+    { "lake_name",  "Free-text lake name" },
+    { "Latitude",   "Latitude (decimal degrees, +N/-S)" },
+    { "Longitude",  "Longitude (decimal degrees, +E/-W)" },
+    { "base_elev",  "Deprecated; the lowest H value is used instead" },
+    { "crest_elev", "Elevation (m) of the overflow crest; defaults to the highest H value" },
+    { "bsn_len",    "Basin length at the crest (m), used for wind fetch/mixing" },
+    { "bsn_wid",    "Basin width at the crest (m), used for wind fetch/mixing" },
+    { "bsn_vals",   "Number of depth-area points supplied in H/A" },
+    { "H",          "Elevation (m) at each depth-area bathymetry point, increasing" },
+    { "A",          "Surface area (m2) at each depth-area bathymetry point, increasing" },
+    //-- init_profiles ----------------------------------------------------------------
+    { "lake_depth",             "Initial water depth (m), required when using the_depths" },
+    { "num_heights",            "Number of points in the_heights (legacy elevation-based profile)" },
+    { "the_heights",            "Elevation (m) of each initial-profile point (legacy alternative to the_depths)" },
+    { "num_depths",             "Number of points in the_depths" },
+    { "the_depths",             "Depth below the surface (m) of each initial temperature/salinity profile point" },
+    { "the_temps",              "Initial water temperature (degC) at each profile point" },
+    { "the_sals",               "Initial salinity (psu) at each profile point" },
+    { "num_wq_vars",            "Number of water-quality variables given an initial profile" },
+    { "wq_names",               "Names of water-quality variables given an initial profile" },
+    { "wq_init_vals",           "Initial value of each named water-quality variable at each profile depth" },
+    { "snow_thickness",         "Initial snow thickness (m)" },
+    { "white_ice_thickness",    "Initial white (snow) ice thickness (m)" },
+    { "blue_ice_thickness",     "Initial blue (clear) ice thickness (m)" },
+    { "init_restart_fname",     "NetCDF restart file to initialise model state from" },
+    { "init_restart_from_file", "Initialise from init_restart_fname instead of the profile above" },
+};
+#define N_NML_HELP (sizeof(glm_nml_help)/sizeof(glm_nml_help[0]))
+
+const char *glm_nml_describe(const char *key)
+{
+    size_t i;
+    for (i = 0; i < N_NML_HELP; i++)
+        if ( strcmp(glm_nml_help[i].key, key) == 0 ) return glm_nml_help[i].desc;
+    return NULL;
+}
+
 /*############################################################################*/
 
 /******************************************************************************
@@ -703,8 +1002,31 @@ void init_glm(int *jstart, char *outp_dir, char *outp_fn, int *nsave)
 /*----------------------------------------------------------------------------*/
 
     //-------------------------------------------------
-    // Open the namelist file.
-    if ( (namlst = open_namelist(glm_nml_file)) < 0 ) {
+    // Open the namelist file (or, in --write_nml mode, the output file we're
+    // about to generate instead of reading one).
+    if ( glm_write_nml_mode ) {
+        namlst = -1;  // never used: every get_namelist() call below is bypassed
+        if ( (glm_example_fp = fopen(glm_example_fname, "w")) == NULL ) {
+            fprintf(stderr, "\n     ERROR: could not open '%s' for writing\n", glm_example_fname);
+            exit(1);
+        }
+        fprintf(glm_example_fp,
+            "! Baseline GLM configuration, generated by `glm --write_nml`.\n"
+            "!\n"
+            "! Every '&section' below, and every key inside it, is read directly out of\n"
+            "! this GLM build's own configuration tables, so it always matches what this\n"
+            "! exact executable understands -- it cannot drift out of date the way a\n"
+            "! hand-maintained example file can.\n"
+            "!\n"
+            "! Lines starting with '   key = value' are live settings, shown at their\n"
+            "! compiled-in default. Lines starting with '!  key = ...' are commented-out\n"
+            "! list-type (comma-separated) parameters that have no default; uncomment and\n"
+            "! fill them in as needed.\n"
+            "!\n"
+            "! glm_setup / morphometry / time / init_profiles have no universal default,\n"
+            "! since they describe a specific lake -- the values below are placeholders\n"
+            "! and MUST be replaced with your own lake's data before running.\n\n");
+    } else if ( (namlst = open_namelist(glm_nml_file)) < 0 ) {
         fprintf(stderr,"\n     ERROR opening the glm namelist file %s\n", glm_nml_file);
         if (strcmp(glm_nml_file, DEFAULT_GLM_NML) == 0) {
             fprintf(stderr, "     Trying %s\n", DEFAULT_GLM_NML_3);
@@ -722,7 +1044,7 @@ void init_glm(int *jstart, char *outp_dir, char *outp_fn, int *nsave)
             exit(1);
     }
 
-    fprintf(stderr, "\n     Reading configuration from %s\n", glm_nml_file);
+    if ( !glm_write_nml_mode ) fprintf(stderr, "\n     Reading configuration from %s\n", glm_nml_file);
 
     //-------------------------------------------------
     // Set some default values
@@ -730,7 +1052,9 @@ void init_glm(int *jstart, char *outp_dir, char *outp_fn, int *nsave)
     Kw = 0.2;
 
     //-------------------------------------------------
-    if ( get_namelist(namlst, glm_setup) != 0 ) {
+    if ( glm_write_nml_mode ) {
+        write_namelist(glm_example_fp, glm_setup, glm_nml_describe);
+    } else if ( get_namelist(namlst, glm_setup) != 0 ) {
        fprintf(stderr,"\n     ERROR reading the 'glm_setup' namelist from %s\n", glm_nml_file);
        exit(1);
     }
@@ -741,7 +1065,9 @@ void init_glm(int *jstart, char *outp_dir, char *outp_fn, int *nsave)
     NumDif = 2;
 
     //-------------------------------------------------
-    if ( get_namelist(namlst, mixing) ) {
+    if ( glm_write_nml_mode ) {
+        write_namelist(glm_example_fp, mixing, glm_nml_describe);
+    } else if ( get_namelist(namlst, mixing) ) {
         fprintf(stderr,"\n     ERROR reading the 'mixing' namelist from %s\n", glm_nml_file);
         exit(1);
     }
@@ -755,7 +1081,8 @@ void init_glm(int *jstart, char *outp_dir, char *outp_fn, int *nsave)
 
     //-------------------------------------------------
     wq_calc   = TRUE;
-    if ( get_namelist(namlst, wq_setup) ) {
+    if ( glm_write_nml_mode ) write_namelist(glm_example_fp, wq_setup, glm_nml_describe);
+    if ( glm_write_nml_mode || get_namelist(namlst, wq_setup) ) {
         // fprintf(stderr, "No WQ config\n");
         twq_lib           = DEFAULT_WQ_LIB;
         wq_calc           = FALSE;
@@ -777,12 +1104,24 @@ void init_glm(int *jstart, char *outp_dir, char *outp_fn, int *nsave)
 
     //-------------------------------------------------
     ptm_sw   = FALSE;
-    if ( get_namelist(namlst, particles) ) {
+    if ( glm_write_nml_mode ) write_namelist(glm_example_fp, particles, glm_nml_describe);
+    if ( glm_write_nml_mode || get_namelist(namlst, particles) ) {
         fprintf(stderr, "No 'particles' config, assuming no particles\n");
     }
 
     //-------------------------------------------------
-    if ( get_namelist(namlst, time) ) {
+    if ( glm_write_nml_mode ) {
+        //# no universal default exists for a run period; seed a valid,
+        //# clearly-a-placeholder example so the rest of init_glm() can
+        //# proceed as if a real config had been read
+        timefmt = 2;
+        start = "2020-01-01 00:00";
+        stop  = "2020-01-11 00:00";
+        dt = 3600;
+        num_days = 10;
+        timezone_r = 0;
+        write_namelist(glm_example_fp, time, glm_nml_describe);
+    } else if ( get_namelist(namlst, time) ) {
         fprintf(stderr,"\n     ERROR reading the 'time' namelist from %s\n", glm_nml_file);
         exit(1);
     }
@@ -804,7 +1143,8 @@ void init_glm(int *jstart, char *outp_dir, char *outp_fn, int *nsave)
     csv_point_nvars = 0;
     csv_lake_fname = NULL;
 
-    if ( get_namelist(namlst, output) ) {
+    if ( glm_write_nml_mode ) write_namelist(glm_example_fp, output, glm_nml_describe);
+    if ( glm_write_nml_mode || get_namelist(namlst, output) ) {
         fprintf(stderr,"\n     ERROR in output parameters specified");
         strcpy(outp_dir, ".");
         strcpy(outp_fn, "output");
@@ -897,7 +1237,12 @@ void init_glm(int *jstart, char *outp_dir, char *outp_fn, int *nsave)
     rh_factor = 1.0;
     rain_factor = 1.0;
 
-    if ( get_namelist(namlst, meteorology) ) {
+    if ( glm_write_nml_mode ) {
+        write_namelist(glm_example_fp, meteorology, glm_nml_describe);
+        link_solar_shade = lss;
+        link_rain_loss = lrl;
+        link_bottom_drag = lbd;
+    } else if ( get_namelist(namlst, meteorology) ) {
         fprintf(stderr,"\n     ERROR reading 'meteorology' from namelist file %s\n", glm_nml_file);
         exit(1);
     } else {
@@ -922,7 +1267,9 @@ void init_glm(int *jstart, char *outp_dir, char *outp_fn, int *nsave)
     coef_wind_chwn = CH;
 
     //-------------------------------------------------
-    if ( get_namelist(namlst, light) ) {
+    if ( glm_write_nml_mode ) {
+        write_namelist(glm_example_fp, light, glm_nml_describe);
+    } else if ( get_namelist(namlst, light) ) {
         fprintf(stderr,"\n     ERROR reading the 'light' namelist from %s\n", glm_nml_file);
         exit(1);
     }
@@ -931,7 +1278,8 @@ void init_glm(int *jstart, char *outp_dir, char *outp_fn, int *nsave)
     for (i = 0; i < MaxLayers; i++) Lake[i].ExtcCoefSW = Kw;
 
     //-------------------------------------------------
-    if ( ! get_namelist(namlst, evaporation) ) {
+    if ( glm_write_nml_mode ) write_namelist(glm_example_fp, evaporation, glm_nml_describe);
+    if ( !glm_write_nml_mode && ! get_namelist(namlst, evaporation) ) {
         if ( evap_file != NULL ) {
             evap_from_file = TRUE;
             open_evap_file(evap_file, timefmt_e);
@@ -944,18 +1292,21 @@ void init_glm(int *jstart, char *outp_dir, char *outp_fn, int *nsave)
     snow_rho_max       = 300.0;
     snow_rho_min       = 50.0;
 
-    if ( (snow_sw = !get_namelist(namlst, snowice)) )
+    if ( glm_write_nml_mode ) write_namelist(glm_example_fp, snowice, glm_nml_describe);
+    if ( (snow_sw = !(glm_write_nml_mode || get_namelist(namlst, snowice))) )
          fprintf(stderr,"     No 'snowice' section, setting defaults & assuming no snowfall\n");
 
     //--------------------------------------------------------------------------
     // fetch
-    fetch_sw = !get_namelist(namlst, fetch);
+    if ( glm_write_nml_mode ) write_namelist(glm_example_fp, fetch, glm_nml_describe);
+    fetch_sw = !(glm_write_nml_mode || get_namelist(namlst, fetch));
 
     //--------------------------------------------------------------------------
     // sediment heat
     sed_heat_Ksoil     = 5.0;
     sed_temp_depth     = 0.1;
-    if ( get_namelist(namlst, sediment) ) {
+    if ( glm_write_nml_mode ) write_namelist(glm_example_fp, sediment, glm_nml_describe);
+    if ( glm_write_nml_mode || get_namelist(namlst, sediment) ) {
         sed_heat_sw = FALSE;
         if (quiet < 2) fprintf(stderr,"     No 'sediment' section, turning off sediment heating\n");
     } else {
@@ -1147,7 +1498,10 @@ for (i = 0; i < n_zones; i++) {
 */
 
     //--------------------------------------------------------------------------
-    open_met_file(meteo_fl, snow_sw, rain_sw, timefmt_m);
+    //# open_met_file() is unconditional (not gated on met_sw) since a real run
+    //# always needs a meteorology file; in --write_nml mode there is no real
+    //# file to open, so skip it and just write out the &bird_model defaults.
+    if ( !glm_write_nml_mode ) open_met_file(meteo_fl, snow_sw, rain_sw, timefmt_m);
     config_bird(namlst);
 
     //-------------------------------------------------
@@ -1177,7 +1531,8 @@ for (i = 0; i < n_zones; i++) {
     }
 
     num_inflows = 0;
-    if ( get_namelist(namlst, inflow) ) {
+    if ( glm_write_nml_mode ) write_namelist(glm_example_fp, inflow, glm_nml_describe);
+    if ( glm_write_nml_mode || get_namelist(namlst, inflow) ) {
         NumInf = 0;
         if ( num_inflows == 0 )
             fprintf(stderr, "     No 'inflow' config, assuming no inflows\n");
@@ -1214,7 +1569,8 @@ for (i = 0; i < n_zones; i++) {
     }
     einff = coef_inf_entrain;
 
-    if ( get_namelist(namlst, groundwater) ) {
+    if ( glm_write_nml_mode ) write_namelist(glm_example_fp, groundwater, glm_nml_describe);
+    if ( !glm_write_nml_mode && get_namelist(namlst, groundwater) ) {
         if ( (num_inflows+gw_mode) > MaxInf ) {
             fprintf(stderr, "     ERROR: Too many inflows specified in 'inflow' and 'groundwater' config %d+%d > %d\n",
                                     num_inflows, gw_mode, MaxInf);
@@ -1235,7 +1591,8 @@ for (i = 0; i < n_zones; i++) {
     //-------------------------------------------------
     seepage = FALSE; seepage_rate = 0.0;
 
-    if ( get_namelist(namlst, outflow) ) {
+    if ( glm_write_nml_mode ) write_namelist(glm_example_fp, outflow, glm_nml_describe);
+    if ( glm_write_nml_mode || get_namelist(namlst, outflow) ) {
         fprintf(stderr, "     No 'outflow' config, assuming no outflows\n");
         NumOut = 0;
     } else {
@@ -1413,7 +1770,8 @@ for (i = 0; i < n_zones; i++) {
     fprintf(stderr, "     DBG initialise_lake returned\n");
 
     //--------------------------------------------------------------------------
-    if ( !get_namelist(namlst, mass_balance) ) {
+    if ( glm_write_nml_mode ) write_namelist(glm_example_fp, mass_balance, glm_nml_describe);
+    if ( !glm_write_nml_mode && !get_namelist(namlst, mass_balance) ) {
         //# this needs to happen after wq stuff has been initialised
         open_balance(out_dir, balance_fname, balance_varnum, (const char**)balance_vars, timefmt_b);
     }
@@ -1479,10 +1837,12 @@ for (i = 0; i < n_zones; i++) {
         }
     }
     // Read heat pump configuration
-    get_namelist(namlst, heat_pump);
+    if ( glm_write_nml_mode ) write_namelist(glm_example_fp, heat_pump, glm_nml_describe);
+    if ( !glm_write_nml_mode ) get_namelist(namlst, heat_pump);
 
     // Read oxygenation configuration (optional block)
-    if ( get_namelist(namlst, oxygenation) ) {
+    if ( glm_write_nml_mode ) write_namelist(glm_example_fp, oxygenation, glm_nml_describe);
+    if ( glm_write_nml_mode || get_namelist(namlst, oxygenation) ) {
         //# Block absent or failed to parse: leave oxygenation disabled.
         oxygenation_mode = 0;
     } else {
@@ -1513,7 +1873,14 @@ for (i = 0; i < n_zones; i++) {
         }
     }
 
-    get_namelist(namlst, debugging);
+    if ( glm_write_nml_mode ) write_namelist(glm_example_fp, debugging, glm_nml_describe);
+    if ( !glm_write_nml_mode ) get_namelist(namlst, debugging);
+
+    if ( glm_write_nml_mode ) {
+        fclose(glm_example_fp);
+        fprintf(stderr, "\n     Baseline configuration written to %s\n\n", glm_example_fname);
+        exit(0);
+    }
 
     close_namelist(namlst);  // Close the glm.nml file
 
@@ -1588,7 +1955,21 @@ void create_lake(int namlst)
     base_elev = MISVAL;
     crest_elev = MISVAL;
     //-------------------------------------------------
-    if ( get_namelist(namlst, morphometry) ) {
+    if ( glm_write_nml_mode ) {
+        //# no universal default exists for a lake's shape; seed a small,
+        //# clearly-a-placeholder bathymetry so the rest of create_lake() can
+        //# proceed exactly as it would for a real, if trivial, lake
+        lake_name = "Example Lake";
+        Latitude = -37.85; Longitude = 175.0;
+        bsn_len = 1000.0; bsn_wid = 500.0;
+        bsn_vals = 3;
+        H = calloc(bsn_vals, sizeof(AED_REAL));
+        A = calloc(bsn_vals, sizeof(AED_REAL));
+        H[0] = 0.0;  A[0] = 0.0;
+        H[1] = 5.0;  A[1] = 80000.0;
+        H[2] = 10.0; A[2] = 100000.0;
+        write_namelist(glm_example_fp, morphometry, glm_nml_describe);
+    } else if ( get_namelist(namlst, morphometry) ) {
         fprintf(stderr,"     ERROR: reading the 'morphometry' namelist from %s\n", glm_nml_file);
         exit(1);
     }
@@ -1856,7 +2237,19 @@ void initialise_lake(int namlst)
     lake_depth = MISVAL;
     num_wq_vars = 0;
 
-    if ( get_namelist(namlst, init_profiles) ) {
+    if ( glm_write_nml_mode ) {
+        //# no universal default exists for an initial profile; seed a small,
+        //# clearly-a-placeholder isothermal profile matching the placeholder
+        //# bathymetry written for &morphometry
+        lake_depth = 10.0;
+        num_depths = 2;
+        the_depths = calloc(num_depths, sizeof(AED_REAL));
+        the_temps  = calloc(num_depths, sizeof(AED_REAL));
+        the_sals   = calloc(num_depths, sizeof(AED_REAL));
+        the_depths[0] = 0.0;  the_temps[0] = 20.0; the_sals[0] = 0.0;
+        the_depths[1] = 10.0; the_temps[1] = 20.0; the_sals[1] = 0.0;
+        write_namelist(glm_example_fp, init_profiles, glm_nml_describe);
+    } else if ( get_namelist(namlst, init_profiles) ) {
         fprintf(stderr,"     ERROR: reading initial_profiles from namelist file %s\n", glm_nml_file);
         exit(1);
     }

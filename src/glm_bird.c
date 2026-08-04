@@ -43,6 +43,7 @@
 #include "glm_const.h"
 #include "glm_util.h"
 #include "glm_bird.h"
+#include "glm_globals.h"
 
 #include <aed_time.h>
 #include <namelist.h>
@@ -82,6 +83,14 @@ int config_bird(int namlst)
           { "Albedo",      TYPE_DOUBLE,           &t_Albedo    },
           { NULL,          TYPE_END,              NULL         }
     };
+    if ( glm_write_nml_mode ) {
+        //# show the module's real defaults, not the MISVAL "unset" sentinels
+        t_AP = AP; t_Oz = Oz; t_WatVap = WatVap;
+        t_AOD500 = AOD500; t_AOD380 = AOD380; t_Albedo = Albedo;
+        write_namelist(glm_example_fp, bird_model, glm_nml_describe);
+        return 1;
+    }
+
     if ( get_namelist(namlst, bird_model) )
         return 1;
 

@@ -204,6 +204,7 @@ jobs:
           cd "$ROOT/GLM"
           if [ "${{ matrix.os }}" = "windows-latest" ]; then
             PATH="$ROOT/ancillary/bin:$PATH" ./glm.exe --version
+            PATH="$ROOT/ancillary/bin:$PATH" ./glm.exe --write_nml glm4.nml
           else
             ./glm --version
           fi
