@@ -117,10 +117,6 @@ SUBROUTINE calc_zone_areas(areas, wlev, surf)
       theZones(1)%z_pc_wet = 1.0
    ENDIF
    DO lev=2, wlev
-!     IF ( lheights(lev) > zone_heights(zon) ) zon = zon + 1
-!
-!      theZones(zon)%zarea = theZones(zon)%zarea + areas(lev) - areas(lev-1)
-
       IF (lheights(lev) <= zone_heights(zon)) THEN
          theZones(zon)%zarea = theZones(zon)%zarea + areas(lev) - areas(lev-1)
       ELSEIF (lheights(lev) > zone_heights(zon) .AND. lheights(lev-1) < zone_heights(zon)) THEN

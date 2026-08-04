@@ -24,30 +24,6 @@ Building n on macOS-X requires :
 
              brew install gd
 
-   6) To build a version including FABM you will need cmake, both brew and port seem to include it
-      in their compiler bundles, but in case they don't :
-
-             brew install cmake
-
-Note:
-   cmake attempts to verify that compiles actually work, unfortunately it
-   attempts to build an executable test program by linking to libgcc_s.dylib.
-   This file doesn't exist on the mac, normally it would be a link to libgcc_s.1.dylib.
-   My workaround for this is to add a symlink in the fortran library directory :
-
-     cd /opt/intel/lib
-     sudo ln -s /usr/lib/libgcc_s.1.dylib libgcc_s.dylib
-
 Note:
     GLM source includes a script - "macpkg.sh" to include non-standard libraries
     into the glm.app binary.
-
-Note:
-   GLM requires gfortran v8 or later in order to build correctly - previous versions of gfortran
-   had a bug in the C compatibility that prevented correct compilation.
-
-Note:
-   If you have upgraded Xcode you might need to make it use the right version :
-      sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
-   and you may need to upgrade the commandLine tools too :
-      sudo xcode-select --install
