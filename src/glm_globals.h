@@ -96,6 +96,7 @@
 #else
 /*++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*/
 
+#include <stdio.h>
 #include "glm.h"
 #include "glm_types.h"
 
@@ -406,6 +407,14 @@ extern AED_REAL oxy_recirc_add;             //# O2 mass loading rate (mass/day, 
 extern CLOGICAL dbg_mix;   //# debug output from mixer
 extern CLOGICAL no_evap;   //# turn off evaporation
 extern int      quiet;     //# turn down output messages
+
+/*----------------------------------------------------------------------------*/
+// --write_nml : dump a baseline nml (built from the live NAMELIST tables)
+// instead of running a simulation
+extern CLOGICAL glm_write_nml_mode;
+extern FILE    *glm_example_fp;
+extern char    *glm_example_fname;
+const char *glm_nml_describe(const char *key);  // defined in glm_init.c
 
 /*----------------------------------------------------------------------------*/
 // C-Fortran shared (see glm_types.F90
