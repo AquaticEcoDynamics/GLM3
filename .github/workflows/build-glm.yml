@@ -209,7 +209,22 @@ jobs:
             PATH="$ROOT/ancillary/bin:$PATH" ./glm.exe --write_nml glm4.nml
           else
             ./glm --version
+            ./glm --write_nml glm4.nml
           fi
+
+          if [ ! -s glm4.nml ]; then
+            echo "::error::--write_nml did not produce a non-empty glm4.nml"
+            exit 1
+          fi
+
+          # Spot-check the blocks that need placeholder-seeding to write
+          # safely (the ones most likely to break if that logic regresses)
+          # plus one plain block, as a proxy for the other ~18.
+          for section in glm_setup morphometry time init_profiles; do
+            grep -q "^&${section}\$" glm4.nml || { echo "::error::glm4.nml is missing &${section}"; exit 1; }
+          done
+
+          echo "glm4.nml generated OK ($(wc -l < glm4.nml) lines)"
 
       # ------------------------------------------------------------------
       # 6. Package the binary for upload. Windows gets its runtime DLLs
