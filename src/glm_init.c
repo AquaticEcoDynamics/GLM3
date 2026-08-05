@@ -2482,7 +2482,10 @@ void initialise_lake(int namlst)
         }
     }
 
-    if ( (j = get_nml_listlen(namlst, "init_profiles", "wq_init_vals")) != (num_wq_vars * num_depths) )
+    //# get_nml_listlen() indexes file_list[namlst]; namlst is a dummy -1 in
+    //# --write_nml mode (no real file was opened), so skip this check there.
+    if ( !glm_write_nml_mode &&
+         (j = get_nml_listlen(namlst, "init_profiles", "wq_init_vals")) != (num_wq_vars * num_depths) )
         fprintf(stderr, "     WARNING: Initial profiles problem - expected %d wd_init_vals entries but got %d\n",
                                              (num_wq_vars * num_depths), j);
 
