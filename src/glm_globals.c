@@ -324,6 +324,13 @@ CLOGICAL dbg_mix = FALSE;   //# debug output from mixer
 CLOGICAL no_evap = FALSE;   //# turn off evaporation
 int      quiet   = 0;       //# turn down output messages
 
+//------------------------------------------------------------------------------
+//  --write_nml
+//------------------------------------------------------------------------------
+CLOGICAL glm_write_nml_mode = FALSE;
+FILE    *glm_example_fp     = NULL;
+char    *glm_example_fname  = NULL;
+
 void set_c_wqvars_ptr(AED_REAL *iwqv)  { WQ_Vars  = iwqv; }
 void set_c_wqsvars_ptr(AED_REAL *iwqsv) { WQS_Vars = iwqsv; }
 void set_c_wqdvars_ptr(AED_REAL *iwqd, AED_REAL *iwqds, int *nwqd, int *nwqds)
