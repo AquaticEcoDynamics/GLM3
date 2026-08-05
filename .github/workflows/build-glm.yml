@@ -104,6 +104,8 @@ jobs:
           # AquaticEcoDynamics/AED_Tools once that PR lands upstream.
           git clone --depth 1 "https://github.com/limnotrack/AED_Tools.git"
 
+          git clone --depth 1 "https://github.com/limnotrack/libutil.git"
+          
           # libaed-api and libaed2 are mutually exclusive, branch-specific
           # dependencies, not universal ones:
           #  - v4alpha has a WITH_API/libaed-api plugin feature; AED2 doesn't
@@ -113,7 +115,7 @@ jobs:
           #    that's set); it has no WITH_API/libaed-api concept.
           # Cloning the wrong one is just wasted time; cloning neither is a
           # hard build failure. Add more branches here as needed.
-          SIBLINGS="libaed-water libaed-benthic libaed-demo libutil libplot"
+          SIBLINGS="libaed-water libaed-benthic libaed-demo libplot"
           if [ "${{ inputs.glm_ref }}" = "v4alpha" ]; then
             SIBLINGS="$SIBLINGS libaed-api"
           else
