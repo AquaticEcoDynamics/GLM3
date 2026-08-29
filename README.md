@@ -1,8 +1,23 @@
-# GLM : The General Lake Model
+# GLM 3 : The General Lake Model (legacy 3.x line)
 
-[![Project Status: Active – The project is being actively developed.](https://www.repostatus.org/badges/latest/active.svg)](https://www.repostatus.org/#active)
-[![GLM](https://img.shields.io/badge/GLM-3.3.0-orange)](https://aquatic.science.uwa.edu.au/research/models/GLM/)
-[![GPLv3 license](https://img.shields.io/badge/License-GPLv3-blue.svg)](http://perso.crans.org/besson/LICENSE.html)
+[![Project Status: Inactive – The project has reached a stable, usable state but is no longer being actively developed.](https://www.repostatus.org/badges/latest/inactive.svg)](https://www.repostatus.org/#inactive)
+[![GLM](https://img.shields.io/badge/GLM-3.3.5-lightgrey)](https://github.com/AquaticEcoDynamics/GLM3/tags)
+[![GPLv3 license](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
+
+> [!WARNING]
+> **This repository is an archive.**
+> `GLM3` holds the legacy GLM 3.x source line and is no longer actively developed.
+> Active GLM development has moved to
+> [**`AquaticEcoDynamics/GLM`**](https://github.com/AquaticEcoDynamics/GLM), which carries the
+> 4.x line. This repository is retained read-only so that the 3.x source, tags and commit
+> history stay available for reference and for reproducing published simulations.
+>
+> **Compatibility notice:** the current
+> [`glm-aed`](https://github.com/AquaticEcoDynamics/glm-aed) bundle is **no longer compatible
+> with this version of GLM**. It builds against the GLM 4.x source line and its revised AED
+> coupling interface. Do not attempt to build current `glm-aed` or `libaed-*` releases against
+> this repository — use the GLM-AED releases that predate the 4.x transition if you need a
+> 3.x-based coupled model.
 
 <br>
 
@@ -13,12 +28,28 @@ and cooling, including the effect of ice cover. It is suited to longer-term inve
 ranging from seasons to decades, and for coupling with biogeochemical models to explore the
 role that stratification and vertical mixing has on biogeochemical and ecological dynamics of lakes, reservoirs, ponds and wetlands.
 
+<br>
 
+## Which repository do I want?
 
-## Accessing the model
+| If you want to... | Go to |
+|---|---|
+| Run or develop the current model | [`GLM`](https://github.com/AquaticEcoDynamics/GLM) (4.x, active) |
+| Get executables, examples and a quick start | [`glm-aed`](https://github.com/AquaticEcoDynamics/glm-aed) |
+| Reproduce an older 3.x simulation, or consult the 3.x history | this repository |
 
-This `GLM` repository is released coupled with the `AED` water quality model, via the **GLM-AED** release. Refer to the [`glm-aed` repository](https://github.com/AquaticEcoDynamics/glm-aed) for pre-compiled model executable files, example simulations, and information for how to get started with the model.
+## Contents of this archive
 
+The final state of this line is **GLM 3.3.5**; the most recent tagged release is
+[`GLM_v3.3.0`](https://github.com/AquaticEcoDynamics/GLM3/tags), alongside earlier `v3.0`,
+`v3.0.0` and `v3.1.0` tags. The `patches/` directory holds the optional bubbler and restart
+source patches for this line — both capabilities are now built into GLM 4.x and the patches are
+not carried forward.
+
+The build scripts (`build_glm.sh`, `build_glm.bat`) and platform notes
+(`README.Windows`, `README.Macintosh`) are preserved as they were, but are unsupported: they are
+known to work against the compiler and library versions current at the time of archiving, and no
+fixes will be issued for newer toolchains.
 
 ## Reference
 
